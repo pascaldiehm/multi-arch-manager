@@ -152,9 +152,141 @@ def file_upload(obj: str):
     json_write(f"{DIR}/objects/files/{obj}", {"local": version, "remote": version})
 
 
+def directory_version(obj: str) -> int:
+    dir = b32d(obj)
+    if not os.path.isdir(dir):
+        return 0
+
+    stat = os.stat(dir)
+    version = int(max(stat.st_mtime, stat.st_ctime))
+    for root, dirs, files in os.walk(dir):
+        for file in files:
+            stat = os.stat(os.path.join(root, file))
+            version = max(version, int(stat.st_mtime), int(stat.st_ctime))
+
+        for dir in dirs:
+            stat = os.stat(os.path.join(root, dir))
+            version = max(version, int(stat.st_mtime), int(stat.st_ctime))
+
+    return version
+
+
+def directory_syncVersion(obj: str) -> tuple[int, int]:
+    if not os.path.isfile(f"{DIR}/objects/directories/{obj}"):
+        return 0, 0
+
+    data = json_read(f"{DIR}/objects/directories/{obj}", {"local": 0, "remote": 0})
+    return data["local"], data["remote"]
+
+
+def directory_backup(obj: str):
+    directory = b32d(obj)
+    if not os.path.isdir(directory):
+        return
+
+    shutil.copytree(directory, f"{DIR}/backups/directories/{obj}")
+    os.chown(f"{DIR}/backups/directories/{obj}", os.stat(directory).st_uid, os.stat(directory).st_gid)
+    os.chmod(f"{DIR}/backups/directories/{obj}", os.stat(directory).st_mode)
+
+    for root, dirs, files in os.walk(f"{DIR}/backups/directories/{obj}"):
+        for file in files:
+            stat = os.stat(os.path.join(root.replace(f"{DIR}/backups/directories/{obj}", directory), file))
+            os.chown(os.path.join(root, file), stat.st_uid, stat.st_gid)
+            os.chmod(os.path.join(root, file), stat.st_mode)
+
+        for dir in dirs:
+            stat = os.stat(os.path.join(root.replace(f"{DIR}/backups/directories/{obj}", directory), dir))
+            os.chown(os.path.join(root, dir), stat.st_uid, stat.st_gid)
+            os.chmod(os.path.join(root, dir), stat.st_mode)
+
+
+def directory_restore(obj: str):
+    directory = b32d(obj)
+    if os.path.isdir(directory):
+        shutil.rmtree(directory)
+
+    if os.path.isdir(f"{DIR}/backups/directories/{obj}"):
+        shutil.move(f"{DIR}/backups/directories/{obj}", directory)
+
+    if os.path.isfile(f"{DIR}/objects/directories/{obj}"):
+        os.remove(f"{DIR}/objects/directories/{obj}")
+
+
+def directory_download(obj: str, version: int):
+    directory = b32d(obj)
+    dirs = makedirs(directory)
+    meta = api("directory-get-meta", {"id": obj})
+    created_dirs = json_read(f"{DIR}/objects/created_dirs", [])
+    for dir in dirs:
+        os.chown(dir, meta["owner"], meta["group"])
+        if not dir in created_dirs:
+            created_dirs.append(dir)
+
+    json_write(f"{DIR}/objects/created_dirs", created_dirs)
+
+    for root, dirs, files in os.walk(directory, topdown=False):
+        for file in files:
+            os.remove(os.path.join(root, file))
+
+        for dir in dirs:
+            os.rmdir(os.path.join(root, dir))
+
+    content = api("directory-get-content", {"id": obj})
+    for dir in sorted(content["dirs"], key=lambda dir: dir.count("/"), reverse=True):
+        path = os.path.join(directory, b32d(dir))
+        meta = content["dirs"][dir]
+        os.mkdir(path)
+        os.chown(path, meta["owner"], meta["group"])
+        os.chmod(path, meta["mode"])
+
+    for file in content["files"]:
+        path = os.path.join(directory, b32d(file))
+        meta = content["files"][file]
+
+        with open(path, "wb") as f:
+            f.write(b64d(meta["content"]))
+
+        os.chown(path, meta["owner"], meta["group"])
+        os.chmod(path, meta["mode"])
+
+    json_write(f"{DIR}/objects/directories/{obj}", {"local": directory_version(obj), "remote": version})
+
+
+def directory_upload(obj: str):
+    directory = b32d(obj)
+    version = directory_version(obj)
+
+    content = {"dirs": {}, "files": {}}
+    for root, dirs, files in os.walk(directory):
+        for dir in dirs:
+            path = os.path.join(root, dir)
+            stat = os.stat(path)
+            content["dirs"][b32e(os.path.relpath(path, directory))] = {
+                "owner": stat.st_uid,
+                "group": stat.st_gid,
+                "mode": stat.st_mode,
+            }
+
+        for file in files:
+            path = os.path.join(root, file)
+            stat = os.stat(path)
+            with open(path, "rb") as f:
+                content["files"][b32e(os.path.relpath(path, directory))] = {
+                    "owner": stat.st_uid,
+                    "group": stat.st_gid,
+                    "mode": stat.st_mode,
+                    "content": b64e(f.read()),
+                }
+
+    stat = os.stat(directory)
+    api("directory-set-content", {"id": obj, "content": content, "version": version})
+    api("directory-set-meta", {"id": obj, "owner": stat.st_uid, "group": stat.st_gid, "mode": stat.st_mode})
+    json_write(f"{DIR}/objects/directories/{obj}", {"local": version, "remote": version})
+
+
 def action_install():
     print("Creating directories...")
-    for type in ["files"]:
+    for type in ["directories", "files"]:
         os.makedirs(f"{DIR}/objects/{type}", exist_ok=True)
         os.makedirs(f"{DIR}/backups/{type}", exist_ok=True)
 
@@ -213,6 +345,10 @@ def action_uninstall():
     print("Restoring local files...")
     for obj in os.listdir(f"{DIR}/objects/files"):
         file_restore(obj)
+
+    print("Restoring local directories...")
+    for obj in os.listdir(f"{DIR}/objects/directories"):
+        directory_restore(obj)
 
     print("Removing created directories...")
     dirs = json_read(f"{DIR}/objects/created_dirs", [])
@@ -285,6 +421,38 @@ def action_list():
             file = b32d(obj)
             print(f"  {file} ({date(file_version(obj))}, local only)")
 
+    print("\nSynchronized directories:")
+    local_objects = os.listdir(f"{DIR}/objects/directories")
+    remote_objects = api("directory-list")
+
+    for obj in local_objects:
+        if not obj in remote_objects:
+            continue
+
+        directory = b32d(obj)
+        local_version = directory_version(obj)
+        remote_version = remote_objects[obj]
+        local_sync_version, remote_sync_version = directory_syncVersion(obj)
+
+        if remote_version > remote_sync_version:
+            print(f"  {directory} ({date(remote_version)}, remote changed)")
+        elif local_version > local_sync_version:
+            print(f"  {directory} ({date(local_version)}, local changed)")
+        elif local_version < local_sync_version:
+            print(f"  {directory} ({date(local_version)}, local deleted)")
+        else:
+            print(f"  {directory} ({date(remote_version)})")
+
+    for obj in remote_objects:
+        if not obj in local_objects:
+            directory = b32d(obj)
+            print(f"  {directory} ({date(remote_objects[obj])}, remote only)")
+
+    for obj in local_objects:
+        if not obj in remote_objects:
+            directory = b32d(obj)
+            print(f"  {directory} ({date(directory_version(obj))}, local only)")
+
 
 def action_sync():
     if not api("check"):
@@ -302,6 +470,12 @@ def action_sync():
         if not file in remote_files:
             file_restore(file)
 
+    local_directories = os.listdir(f"{DIR}/objects/directories")
+    remote_directories = api("directory-list")
+    for directory in local_directories:
+        if not directory in remote_directories:
+            directory_restore(directory)
+
     for file in remote_files:
         if not file in local_files:
             file_backup(file)
@@ -316,6 +490,20 @@ def action_sync():
             elif local_version > local_sync_version:
                 file_upload(file)
 
+    for directory in remote_directories:
+        if not directory in local_directories:
+            directory_backup(directory)
+            directory_download(directory, remote_directories[directory])
+        else:
+            local_version = directory_version(directory)
+            remote_version = remote_directories[directory]
+            local_sync_version, remote_sync_version = directory_syncVersion(directory)
+
+            if remote_version > remote_sync_version or local_version < local_sync_version:
+                directory_download(directory)
+            elif local_version > local_sync_version:
+                directory_upload(directory)
+
     with open(f"{DIR}/state", "w") as f:
         f.write(f"Last sync: {date()}")
 
@@ -329,6 +517,12 @@ def action_addFile(path: str):
     obj = b32e(file)
     if api("file-exists", {"id": obj}):
         print("File is already synced")
+        sys.exit(1)
+
+    directories = api("directory-list")
+    parents = [b32d(dir) for dir in directories if file.startswith(b32d(dir))]
+    if len(parents) > 0:
+        print(f"File is part of synced directory {parents[0]}")
         sys.exit(1)
 
     file_backup(obj)
@@ -349,6 +543,49 @@ def action_removeFile(path: str):
     file_restore(obj)
 
     print("File removed")
+
+
+def action_addDirectory(path: str):
+    directory = os.path.abspath(path)
+    if not os.path.isdir(directory):
+        print("Directory does not exist")
+        sys.exit(1)
+
+    obj = b32e(directory)
+    if api("directory-exists", {"id": obj}):
+        print("Directory is already synced")
+        sys.exit(1)
+
+    directories = api("directory-list")
+    parents = [b32d(dir) for dir in directories if directory.startswith(b32d(dir))]
+    if len(parents) > 0:
+        print(f"Directory is part of synced directory {parents[0]}")
+        sys.exit(1)
+
+    files = api("file-list")
+    children = [b32d(file) for file in files if b32d(file).startswith(directory)]
+    if len(children) > 0:
+        print(f"Directory contains synced file {children[0]}")
+        sys.exit(1)
+
+    directory_backup(obj)
+    api("directory-create", {"id": obj})
+    directory_upload(obj)
+
+    print("Directory added")
+
+
+def action_removeDirectory(path: str):
+    directory = os.path.abspath(path)
+    obj = b32e(directory)
+    if not api("directory-exists", {"id": obj}):
+        print("Directory is not synced")
+        sys.exit(1)
+
+    api("directory-delete", {"id": obj})
+    directory_restore(obj)
+
+    print("Directory removed")
 
 
 if __name__ == "__main__":
@@ -411,11 +648,19 @@ if __name__ == "__main__":
 
                     action_addFile(arg(3))
 
+                case "directory":
+                    if len(sys.argv) != 4:
+                        print("Usage: mam add directory <path>")
+                        sys.exit(1)
+
+                    action_addDirectory(arg(3))
+
                 case _:
                     print("Usage: mam add <object>")
                     print("Add an object to sync")
                     print()
                     print("mam add file <path>       Add a file to sync")
+                    print("mam add directory <path>  Add a directory to sync")
                     sys.exit(1)
 
         case "remove":
@@ -427,11 +672,19 @@ if __name__ == "__main__":
 
                     action_removeFile(arg(3))
 
+                case "directory":
+                    if len(sys.argv) != 4:
+                        print("Usage: mam remove directory <path>")
+                        sys.exit(1)
+
+                    action_removeDirectory(arg(3))
+
                 case _:
                     print("Usage: mam remove <object>")
                     print("Remove an object from sync")
                     print()
                     print("mam remove file <path>       Remove a file from sync")
+                    print("mam remove directory <path>  Remove a directory from sync")
                     sys.exit(1)
 
         case _:

@@ -44,6 +44,14 @@ $db->exec("CREATE TABLE IF NOT EXISTS `files` (
     `group` INTEGER DEFAULT 0,
     `mode` INTEGER DEFAULT 0
 )");
+$db->exec("CREATE TABLE IF NOT EXISTS `directories` (
+    `id` TEXT PRIMARY KEY,
+    `version` INTEGER DEFAULT 0,
+    `content` TEXT DEFAULT '{\"dirs\": {}, \"files\": {}}',
+    `owner` INTEGER DEFAULT 0,
+    `group` INTEGER DEFAULT 0,
+    `mode` INTEGER DEFAULT 0
+)");
 
 switch (arg("action")) {
     case "check":
@@ -100,6 +108,62 @@ switch (arg("action")) {
 
     case "file-get-meta":
         $stmt = $db->prepare("SELECT `version`, `owner`, `group`, `mode` FROM `files` WHERE `id` = :id");
+        $stmt->bindValue(":id", arg("id"));
+        $result = $stmt->execute();
+        $row = $result->fetchArray(SQLITE3_ASSOC);
+        respond($row);
+
+    case "directory-create":
+        $stmt = $db->prepare("INSERT INTO `directories` (`id`) VALUES (:id)");
+        $stmt->bindValue(":id", arg("id"));
+        $stmt->execute();
+        respond();
+
+    case "directory-delete":
+        $stmt = $db->prepare("DELETE FROM `directories` WHERE `id` = :id");
+        $stmt->bindValue(":id", arg("id"));
+        $stmt->execute();
+        respond();
+
+    case "directory-exists":
+        $stmt = $db->prepare("SELECT COUNT(*) FROM `directories` WHERE `id` = :id");
+        $stmt->bindValue(":id", arg("id"));
+        $result = $stmt->execute();
+        respond($result->fetchArray()[0] > 0);
+
+    case "directory-list":
+        $stmt = $db->prepare("SELECT `id`, `version` FROM `directories`");
+        $result = $stmt->execute();
+        $directories = [];
+        while ($row = $result->fetchArray(SQLITE3_ASSOC)) $directories[$row["id"]] = $row["version"];
+        respond($directories);
+
+    case "directory-set-content":
+        $stmt = $db->prepare("UPDATE `directories` SET `content` = :content, `version` = :version WHERE `id` = :id");
+        $stmt->bindValue(":id", arg("id"));
+        $stmt->bindValue(":content", json_encode(arg("content")));
+        $stmt->bindValue(":version", arg("version"));
+        $stmt->execute();
+        respond();
+
+    case "directory-set-meta":
+        $stmt = $db->prepare("UPDATE `directories` SET `owner` = :owner, `group` = :group, `mode` = :mode WHERE `id` = :id");
+        $stmt->bindValue(":id", arg("id"));
+        $stmt->bindValue(":owner", arg("owner"));
+        $stmt->bindValue(":group", arg("group"));
+        $stmt->bindValue(":mode", arg("mode"));
+        $stmt->execute();
+        respond();
+
+    case "directory-get-content":
+        $stmt = $db->prepare("SELECT `content` FROM `directories` WHERE `id` = :id");
+        $stmt->bindValue(":id", arg("id"));
+        $result = $stmt->execute();
+        $row = $result->fetchArray(SQLITE3_ASSOC);
+        respond(json_decode($row["content"], true));
+
+    case "directory-get-meta":
+        $stmt = $db->prepare("SELECT `version`, `owner`, `group`, `mode` FROM `directories` WHERE `id` = :id");
         $stmt->bindValue(":id", arg("id"));
         $result = $stmt->execute();
         $row = $result->fetchArray(SQLITE3_ASSOC);
