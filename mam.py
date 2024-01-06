@@ -1,15 +1,49 @@
 #!/usr/bin/env python3
 
+import base64
 import json
 import os
 import shutil
 import subprocess
 import sys
 import urllib.request
+from datetime import datetime
 from getpass import getpass
 
 DIR = "/usr/local/share/mam"
 CONFIG = {"address": "localhost", "password": "", "sudoer": "nobody"}
+
+
+def b32e(s: str) -> str:
+    return base64.b32encode(s.encode()).decode()
+
+
+def b32d(s: str) -> str:
+    return base64.b32decode(s.encode()).decode()
+
+
+def b64e(b: bytes) -> str:
+    return base64.b64encode(b).decode()
+
+
+def b64d(s: str) -> bytes:
+    return base64.b64decode(s.encode())
+
+
+def makedirs(path: str) -> list[str]:
+    dirs = []
+    while not os.path.isdir(path):
+        dirs.insert(0, path)
+        path = os.path.dirname(path)
+
+    for dir in dirs:
+        os.mkdir(dir)
+
+    return dirs
+
+
+def date(timestamp: int = datetime.now().timestamp()) -> str:
+    return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def json_read(path: str, default: any = None):
@@ -45,7 +79,85 @@ def api(action: str, data: dict = {}):
     return None
 
 
+def file_version(obj: str) -> int:
+    file = b32d(obj)
+    if not os.path.isfile(file):
+        return 0
+
+    stat = os.stat(file)
+    return int(max(stat.st_mtime, stat.st_ctime))
+
+
+def file_syncVersion(obj: str) -> tuple[int, int]:
+    if not os.path.isfile(f"{DIR}/objects/files/{obj}"):
+        return 0, 0
+
+    data = json_read(f"{DIR}/objects/files/{obj}", {"local": 0, "remote": 0})
+    return data["local"], data["remote"]
+
+
+def file_backup(obj: str):
+    file = b32d(obj)
+    if not os.path.isfile(file):
+        return
+
+    shutil.copy(file, f"{DIR}/backups/files/{obj}")
+    os.chown(f"{DIR}/backups/files/{obj}", os.stat(file).st_uid, os.stat(file).st_gid)
+    os.chmod(f"{DIR}/backups/files/{obj}", os.stat(file).st_mode)
+
+
+def file_restore(obj: str):
+    file = b32d(obj)
+    if os.path.isfile(file):
+        os.remove(file)
+
+    if os.path.isfile(f"{DIR}/backups/files/{obj}"):
+        shutil.move(f"{DIR}/backups/files/{obj}", file)
+
+    if os.path.isfile(f"{DIR}/objects/files/{obj}"):
+        os.remove(f"{DIR}/objects/files/{obj}")
+
+
+def file_download(obj: str, version: int):
+    file = b32d(obj)
+    dirs = makedirs(os.path.dirname(file))
+    meta = api("file-get-meta", {"id": obj})
+
+    with open(file, "wb") as f:
+        f.write(b64d(api("file-get-content", {"id": obj})))
+
+    os.chown(file, meta["owner"], meta["group"])
+    os.chmod(file, meta["mode"])
+
+    json_write(f"{DIR}/objects/files/{obj}", {"local": file_version(obj), "remote": version})
+
+    created_dirs = json_read(f"{DIR}/objects/created_dirs", [])
+    for dir in dirs:
+        os.chown(dir, meta["owner"], meta["group"])
+        if not dir in created_dirs:
+            created_dirs.append(dir)
+
+    json_write(f"{DIR}/objects/created_dirs", created_dirs)
+
+
+def file_upload(obj: str):
+    file = b32d(obj)
+    version = file_version(obj)
+    stat = os.stat(file)
+
+    with open(file, "rb") as f:
+        api("file-set-content", {"id": obj, "content": b64e(f.read()), "version": version})
+
+    api("file-set-meta", {"id": obj, "owner": stat.st_uid, "group": stat.st_gid, "mode": stat.st_mode})
+    json_write(f"{DIR}/objects/files/{obj}", {"local": version, "remote": version})
+
+
 def action_install():
+    print("Creating directories...")
+    for type in ["files"]:
+        os.makedirs(f"{DIR}/objects/{type}", exist_ok=True)
+        os.makedirs(f"{DIR}/backups/{type}", exist_ok=True)
+
     print("Installing mam...")
     shutil.copy(__file__, "/usr/local/bin/mam")
     os.chmod("/usr/local/bin/mam", 0o755)
@@ -80,11 +192,93 @@ def action_auth():
 
 
 def action_uninstall():
+    print("Restoring local files...")
+    for obj in os.listdir(f"{DIR}/objects/files"):
+        file_restore(obj)
+
+    print("Removing created directories...")
+    dirs = json_read(f"{DIR}/objects/created_dirs", [])
+    dirs = sorted(dirs, key=lambda dir: dir.count("/"), reverse=True)
+    for dir in dirs:
+        try:
+            os.rmdir(dir)
+        except:
+            pass
+
     print("Uninstalling mam...")
     os.remove("/usr/local/bin/mam")
     shutil.rmtree(DIR)
 
     print("Done!")
+
+
+def action_list():
+    if not api("check"):
+        print("Authentication failed.")
+        sys.exit(1)
+
+    print("Synchronized files:")
+    local_objects = os.listdir(f"{DIR}/objects/files")
+    remote_objects = api("file-list")
+
+    for obj in local_objects:
+        if not obj in remote_objects:
+            continue
+
+        file = b32d(obj)
+        local_version = file_version(obj)
+        remote_version = remote_objects[obj]
+        local_sync_version, remote_sync_version = file_syncVersion(obj)
+
+        if remote_version > remote_sync_version:
+            print(f"  {file} ({date(remote_version)}, remote changed)")
+        elif local_version > local_sync_version:
+            print(f"  {file} ({date(local_version)}, local changed)")
+        elif local_version < local_sync_version:
+            print(f"  {file} ({date(local_version)}, local deleted)")
+        else:
+            print(f"  {file} ({date(remote_version)})")
+
+    for obj in remote_objects:
+        if not obj in local_objects:
+            file = b32d(obj)
+            print(f"  {file} ({date(remote_objects[obj])}, remote only)")
+
+    for obj in local_objects:
+        if not obj in remote_objects:
+            file = b32d(obj)
+            print(f"  {file} ({date(file_version(obj))}, local only)")
+
+
+def action_addFile(path: str):
+    file = os.path.abspath(path)
+    if not os.path.isfile(file):
+        print("File does not exist")
+        sys.exit(1)
+
+    obj = b32e(file)
+    if api("file-exists", {"id": obj}):
+        print("File is already synced")
+        sys.exit(1)
+
+    file_backup(obj)
+    api("file-create", {"id": obj})
+    file_upload(obj)
+
+    print("File added")
+
+
+def action_removeFile(path: str):
+    file = os.path.abspath(path)
+    obj = b32e(file)
+    if not api("file-exists", {"id": obj}):
+        print("File is not synced")
+        sys.exit(1)
+
+    api("file-delete", {"id": obj})
+    file_restore(obj)
+
+    print("File removed")
 
 
 if __name__ == "__main__":
@@ -117,6 +311,44 @@ if __name__ == "__main__":
 
             action_uninstall()
 
+        case "list":
+            if len(sys.argv) != 2:
+                print("Usage: mam list")
+                sys.exit(1)
+
+            action_list()
+
+        case "add":
+            match arg(2):
+                case "file":
+                    if len(sys.argv) != 4:
+                        print("Usage: mam add file <path>")
+                        sys.exit(1)
+
+                    action_addFile(arg(3))
+
+                case _:
+                    print("Usage: mam add <object>")
+                    print("Add an object to sync")
+                    print()
+                    print("mam add file <path>       Add a file to sync")
+                    sys.exit(1)
+
+        case "remove":
+            match arg(2):
+                case "file":
+                    if len(sys.argv) != 4:
+                        print("Usage: mam remove file <path>")
+                        sys.exit(1)
+
+                    action_removeFile(arg(3))
+
+                case _:
+                    print("Usage: mam remove <object>")
+                    print("Remove an object from sync")
+                    print()
+                    print("mam remove file <path>       Remove a file from sync")
+                    sys.exit(1)
 
         case _:
             print("Usage: mam <command>")
@@ -125,4 +357,7 @@ if __name__ == "__main__":
             print("mam install    Install mam on this machine")
             print("mam auth       Authenticate this machine with a mam server")
             print("mam uninstall  Uninstall mam from this machine")
+            print("mam list       List all synced objects")
+            print("mam add        Add an object to sync")
+            print("mam remove     Remove an object from sync")
             sys.exit(1)
