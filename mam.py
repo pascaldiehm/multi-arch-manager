@@ -9,7 +9,7 @@ import urllib.request
 from datetime import datetime
 from getpass import getpass
 
-DIR = "/usr/local/share/mam"
+DIR = "/var/lib/mam"
 CONFIG = {"address": "localhost", "password": ""}
 
 
