@@ -58,7 +58,7 @@ def json_write(path: str, data: dict):
         json.dump(data, f)
 
 
-def arg(n: int) -> str:
+def arg(n: int) -> str | None:
     return sys.argv[n] if len(sys.argv) > n else None
 
 
@@ -88,9 +88,6 @@ def file_version(obj: str) -> int:
 
 
 def file_syncVersion(obj: str) -> tuple[int, int]:
-    if not os.path.isfile(f"{DIR}/objects/files/{obj}"):
-        return 0, 0
-
     data = json_read(f"{DIR}/objects/files/{obj}", {"local": 0, "remote": 0})
     return data["local"], data["remote"]
 
@@ -100,9 +97,10 @@ def file_backup(obj: str):
     if not os.path.isfile(file):
         return
 
+    stat = os.stat(file)
     shutil.copy(file, f"{DIR}/backups/files/{obj}")
-    os.chown(f"{DIR}/backups/files/{obj}", os.stat(file).st_uid, os.stat(file).st_gid)
-    os.chmod(f"{DIR}/backups/files/{obj}", os.stat(file).st_mode)
+    os.chown(f"{DIR}/backups/files/{obj}", stat.st_uid, stat.st_gid)
+    os.chmod(f"{DIR}/backups/files/{obj}", stat.st_mode)
 
 
 def file_restore(obj: str):
@@ -161,19 +159,16 @@ def directory_version(obj: str) -> int:
     for root, dirs, files in os.walk(dir):
         for file in files:
             stat = os.stat(os.path.join(root, file))
-            version = max(version, int(stat.st_mtime), int(stat.st_ctime))
+            version = int(max(version, stat.st_mtime, stat.st_ctime))
 
         for dir in dirs:
             stat = os.stat(os.path.join(root, dir))
-            version = max(version, int(stat.st_mtime), int(stat.st_ctime))
+            version = int(max(version, stat.st_mtime, stat.st_ctime))
 
     return version
 
 
 def directory_syncVersion(obj: str) -> tuple[int, int]:
-    if not os.path.isfile(f"{DIR}/objects/directories/{obj}"):
-        return 0, 0
-
     data = json_read(f"{DIR}/objects/directories/{obj}", {"local": 0, "remote": 0})
     return data["local"], data["remote"]
 
@@ -183,9 +178,10 @@ def directory_backup(obj: str):
     if not os.path.isdir(directory):
         return
 
+    stat = os.stat(directory)
     shutil.copytree(directory, f"{DIR}/backups/directories/{obj}")
-    os.chown(f"{DIR}/backups/directories/{obj}", os.stat(directory).st_uid, os.stat(directory).st_gid)
-    os.chmod(f"{DIR}/backups/directories/{obj}", os.stat(directory).st_mode)
+    os.chown(f"{DIR}/backups/directories/{obj}", stat.st_uid, stat.st_gid)
+    os.chmod(f"{DIR}/backups/directories/{obj}", stat.st_mode)
 
     for root, dirs, files in os.walk(f"{DIR}/backups/directories/{obj}"):
         for file in files:
@@ -215,23 +211,10 @@ def directory_download(obj: str, version: int):
     directory = b32d(obj)
     dirs = makedirs(directory)
     meta = api("directory-get-meta", {"id": obj})
-    created_dirs = json_read(f"{DIR}/objects/created_dirs", [])
-    for dir in dirs:
-        os.chown(dir, meta["owner"], meta["group"])
-        if not dir in created_dirs:
-            created_dirs.append(dir)
 
-    json_write(f"{DIR}/objects/created_dirs", created_dirs)
-
-    for root, dirs, files in os.walk(directory, topdown=False):
-        for file in files:
-            os.remove(os.path.join(root, file))
-
-        for dir in dirs:
-            os.rmdir(os.path.join(root, dir))
-
+    shutil.rmtree(directory)
     content = api("directory-get-content", {"id": obj})
-    for dir in sorted(content["dirs"], key=lambda dir: dir.count("/"), reverse=True):
+    for dir in sorted(content["dirs"], key=lambda dir: dir.count("/")):
         path = os.path.join(directory, b32d(dir))
         meta = content["dirs"][dir]
         os.mkdir(path)
@@ -249,6 +232,14 @@ def directory_download(obj: str, version: int):
         os.chmod(path, meta["mode"])
 
     json_write(f"{DIR}/objects/directories/{obj}", {"local": directory_version(obj), "remote": version})
+
+    created_dirs = json_read(f"{DIR}/objects/created_dirs", [])
+    for dir in dirs:
+        os.chown(dir, meta["owner"], meta["group"])
+        if not dir in created_dirs:
+            created_dirs.append(dir)
+
+    json_write(f"{DIR}/objects/created_dirs", created_dirs)
 
 
 def directory_upload(obj: str):
