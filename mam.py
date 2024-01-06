@@ -4,14 +4,13 @@ import base64
 import json
 import os
 import shutil
-import subprocess
 import sys
 import urllib.request
 from datetime import datetime
 from getpass import getpass
 
 DIR = "/usr/local/share/mam"
-CONFIG = {"address": "localhost", "password": "", "sudoer": "nobody"}
+CONFIG = {"address": "localhost", "password": ""}
 
 
 def b32e(s: str) -> str:
@@ -284,9 +283,53 @@ def directory_upload(obj: str):
     json_write(f"{DIR}/objects/directories/{obj}", {"local": version, "remote": version})
 
 
+def package_backup(obj: str):
+    if os.system(f"paru -Q {b32d(obj)}") == 0:
+        open(f"{DIR}/backups/packages/{obj}", "w").close()
+
+
+def package_restore(obj: str):
+    if os.path.isfile(f"{DIR}/backups/packages/{obj}"):
+        os.remove(f"{DIR}/backups/packages/{obj}")
+    else:
+        os.system(f"paru --noconfirm -Rs {b32d(obj)}")
+
+    if os.path.isfile(f"{DIR}/objects/packages/{obj}"):
+        os.remove(f"{DIR}/objects/packages/{obj}")
+
+
+def package_install(obj: str):
+    if os.system(f"paru -Q {b32d(obj)}") != 0:
+        if os.system(f"paru -Syia {b32d(obj)}") != 0:
+            os.system(f"paru --noconfirm -Sy {b32d(obj)}")
+        else:
+            os.system("mkdir -p /tmp/mam && chown mam:mam /tmp/mam")
+            os.system(f"sudo -u mam HOME=/tmp/mam paru --noconfirm -Sy {b32d(obj)}")
+
+    open(f"{DIR}/objects/packages/{obj}", "w").close()
+
+
 def action_install():
+    print("Adding mam user...")
+    if os.system("id mam") != 0:
+        os.system("useradd --system mam")
+
+    with open("/etc/sudoers.d/mam", "w") as f:
+        f.write("mam ALL=(root) NOPASSWD: /usr/bin/pacman\n")
+
+    print("Installing dependencies...")
+    os.system("pacman --noconfirm -Syu git fakeroot binutils")
+    if os.system("paru --version") != 0:
+        if os.path.isdir("/tmp/paru"):
+            shutil.rmtree("/tmp/paru")
+
+        os.system("git clone https://aur.archlinux.org/paru-bin.git /tmp/paru && chown -R mam:mam /tmp/paru")
+        os.system("mkdir -p /tmp/mam && chown mam:mam /tmp/mam")
+        os.system("cd /tmp/paru && sudo -u mam HOME=/tmp/mam makepkg")
+        os.system("pacman --noconfirm -U /tmp/paru/paru-*.pkg.tar.zst")
+
     print("Creating directories...")
-    for type in ["directories", "files"]:
+    for type in ["directories", "files", "packages"]:
         os.makedirs(f"{DIR}/objects/{type}", exist_ok=True)
         os.makedirs(f"{DIR}/backups/{type}", exist_ok=True)
 
@@ -320,16 +363,9 @@ def action_auth():
     while True:
         CONFIG["address"] = input("Server address: ")
         CONFIG["password"] = getpass("Server password: ")
-        CONFIG["sudoer"] = input("Preferred sudo user: ")
 
         if not api("check"):
             print("Authentication failed!")
-            print("Please try again.")
-            print()
-            continue
-
-        if "not allowed" in subprocess.check_output(["sudo", "-l", "-U", CONFIG["sudoer"]]).decode():
-            print("Invalid sudo user!")
             print("Please try again.")
             print()
             continue
@@ -350,6 +386,10 @@ def action_uninstall():
     for obj in os.listdir(f"{DIR}/objects/directories"):
         directory_restore(obj)
 
+    print("Restoring local packages...")
+    for obj in os.listdir(f"{DIR}/objects/packages"):
+        package_restore(obj)
+
     print("Removing created directories...")
     dirs = json_read(f"{DIR}/objects/created_dirs", [])
     dirs = sorted(dirs, key=lambda dir: dir.count("/"), reverse=True)
@@ -366,6 +406,10 @@ def action_uninstall():
     print("Uninstalling mam...")
     os.remove("/usr/local/bin/mam")
     shutil.rmtree(DIR)
+
+    print("Removing mam user...")
+    os.system("userdel mam")
+    os.remove("/etc/sudoers.d/mam")
 
     print("Done!")
 
@@ -453,6 +497,22 @@ def action_list():
             directory = b32d(obj)
             print(f"  {directory} ({date(directory_version(obj))}, local only)")
 
+    print("\nSynchronized packages:")
+    local_objects = os.listdir(f"{DIR}/objects/packages")
+    remote_objects = api("package-list")
+
+    for obj in local_objects:
+        if obj in remote_objects:
+            print(f"  {b32d(obj)}")
+
+    for obj in remote_objects:
+        if not obj in local_objects:
+            print(f"  {b32d(obj)} (remote only)")
+
+    for obj in local_objects:
+        if not obj in remote_objects:
+            print(f"  {b32d(obj)} (local only)")
+
 
 def action_sync():
     if not api("check"):
@@ -475,6 +535,12 @@ def action_sync():
     for directory in local_directories:
         if not directory in remote_directories:
             directory_restore(directory)
+
+    local_packages = os.listdir(f"{DIR}/objects/packages")
+    remote_packages = api("package-list")
+    for package in local_packages:
+        if not package in remote_packages:
+            package_restore(package)
 
     for file in remote_files:
         if not file in local_files:
@@ -503,6 +569,12 @@ def action_sync():
                 directory_download(directory)
             elif local_version > local_sync_version:
                 directory_upload(directory)
+
+    for package in remote_packages:
+        if not package in local_packages:
+            package_backup(package)
+
+        package_install(package)
 
     with open(f"{DIR}/state", "w") as f:
         f.write(f"Last sync: {date()}")
@@ -588,6 +660,31 @@ def action_removeDirectory(path: str):
     print("Directory removed")
 
 
+def action_addPackage(name: str):
+    obj = b32e(name)
+    if api("package-exists", {"id": obj}):
+        print("Package is already synced")
+        sys.exit(1)
+
+    package_backup(obj)
+    api("package-add", {"id": obj})
+    package_install(obj)
+
+    print("Package added")
+
+
+def action_removePackage(name: str):
+    obj = b32e(name)
+    if not api("package-exists", {"id": obj}):
+        print("Package is not synced")
+        sys.exit(1)
+
+    api("package-remove", {"id": obj})
+    package_restore(obj)
+
+    print("Package removed")
+
+
 if __name__ == "__main__":
     if os.geteuid() != 0:
         print("This script must be run as root")
@@ -655,12 +752,20 @@ if __name__ == "__main__":
 
                     action_addDirectory(arg(3))
 
+                case "package":
+                    if len(sys.argv) != 4:
+                        print("Usage: mam add package <name>")
+                        sys.exit(1)
+
+                    action_addPackage(arg(3))
+
                 case _:
                     print("Usage: mam add <object>")
                     print("Add an object to sync")
                     print()
                     print("mam add file <path>       Add a file to sync")
                     print("mam add directory <path>  Add a directory to sync")
+                    print("mam add package <name>    Add a package to sync")
                     sys.exit(1)
 
         case "remove":
@@ -679,12 +784,20 @@ if __name__ == "__main__":
 
                     action_removeDirectory(arg(3))
 
+                case "package":
+                    if len(sys.argv) != 4:
+                        print("Usage: mam remove package <name>")
+                        sys.exit(1)
+
+                    action_removePackage(arg(3))
+
                 case _:
                     print("Usage: mam remove <object>")
                     print("Remove an object from sync")
                     print()
                     print("mam remove file <path>       Remove a file from sync")
                     print("mam remove directory <path>  Remove a directory from sync")
+                    print("mam remove package <name>    Remove a package from sync")
                     sys.exit(1)
 
         case _:

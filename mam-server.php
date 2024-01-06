@@ -52,6 +52,9 @@ $db->exec("CREATE TABLE IF NOT EXISTS `directories` (
     `group` INTEGER DEFAULT 0,
     `mode` INTEGER DEFAULT 0
 )");
+$db->exec("CREATE TABLE IF NOT EXISTS `packages` (
+    `id` TEXT PRIMARY KEY
+)");
 
 switch (arg("action")) {
     case "check":
@@ -168,6 +171,31 @@ switch (arg("action")) {
         $result = $stmt->execute();
         $row = $result->fetchArray(SQLITE3_ASSOC);
         respond($row);
+
+    case "package-add":
+        $stmt = $db->prepare("INSERT INTO `packages` (`id`) VALUES (:id)");
+        $stmt->bindValue(":id", arg("id"));
+        $stmt->execute();
+        respond();
+
+    case "package-remove":
+        $stmt = $db->prepare("DELETE FROM `packages` WHERE `id` = :id");
+        $stmt->bindValue(":id", arg("id"));
+        $stmt->execute();
+        respond();
+
+    case "package-exists":
+        $stmt = $db->prepare("SELECT COUNT(*) FROM `packages` WHERE `id` = :id");
+        $stmt->bindValue(":id", arg("id"));
+        $result = $stmt->execute();
+        respond($result->fetchArray()[0] > 0);
+
+    case "package-list":
+        $stmt = $db->prepare("SELECT `id` FROM `packages`");
+        $result = $stmt->execute();
+        $packages = [];
+        while ($row = $result->fetchArray(SQLITE3_ASSOC)) $packages[] = $row["id"];
+        respond($packages);
 
     default:
         error("Invalid action: " . arg("action"));
