@@ -162,6 +162,24 @@ def action_install():
     shutil.copy(__file__, "/usr/local/bin/mam")
     os.chmod("/usr/local/bin/mam", 0o755)
 
+    print("Installing daemon...")
+    with open("/etc/systemd/system/mam.service", "w") as f:
+        f.write("[Unit]\n")
+        f.write("Description=MAM Daemon\n")
+        f.write("After=network.target\n")
+        f.write("\n")
+        f.write("[Service]\n")
+        f.write("Type=simple\n")
+        f.write("ExecStart=/usr/local/bin/mam sync\n")
+        f.write("Restart=always\n")
+        f.write("RestartSec=600\n")
+        f.write("\n")
+        f.write("[Install]\n")
+        f.write("WantedBy=default.target\n")
+
+    os.system("systemctl daemon-reload")
+    os.system("systemctl enable --now mam.service")
+
     print("Done!")
     print("Please run `mam auth` to authenticate this machine.")
 
@@ -205,11 +223,29 @@ def action_uninstall():
         except:
             pass
 
+    print("Stopping daemon...")
+    os.system("systemctl disable --now mam.service")
+    os.remove("/etc/systemd/system/mam.service")
+
     print("Uninstalling mam...")
     os.remove("/usr/local/bin/mam")
     shutil.rmtree(DIR)
 
     print("Done!")
+
+
+def action_status():
+    if not os.path.isfile(f"{DIR}/config"):
+        print("Not configured.")
+        sys.exit(1)
+    elif not api("check"):
+        print("Authentication failed.")
+        sys.exit(1)
+    elif not os.path.isfile(f"{DIR}/state"):
+        print("Not synced.")
+    else:
+        with open(f"{DIR}/state") as f:
+            print(f.read())
 
 
 def action_list():
@@ -248,6 +284,40 @@ def action_list():
         if not obj in remote_objects:
             file = b32d(obj)
             print(f"  {file} ({date(file_version(obj))}, local only)")
+
+
+def action_sync():
+    if not api("check"):
+        with open(f"{DIR}/state") as f:
+            f.write("Authentication failed.")
+
+        sys.exit(1)
+
+    with open(f"{DIR}/state", "w") as f:
+        f.write("Syncing...")
+
+    local_files = os.listdir(f"{DIR}/objects/files")
+    remote_files = api("file-list")
+    for file in local_files:
+        if not file in remote_files:
+            file_restore(file)
+
+    for file in remote_files:
+        if not file in local_files:
+            file_backup(file)
+            file_download(file, remote_files[file])
+        else:
+            local_version = file_version(file)
+            remote_version = remote_files[file]
+            local_sync_version, remote_sync_version = file_syncVersion(file)
+
+            if remote_version > remote_sync_version or local_version < local_sync_version:
+                file_download(file)
+            elif local_version > local_sync_version:
+                file_upload(file)
+
+    with open(f"{DIR}/state", "w") as f:
+        f.write(f"Last sync: {date()}")
 
 
 def action_addFile(path: str):
@@ -311,12 +381,26 @@ if __name__ == "__main__":
 
             action_uninstall()
 
+        case "status":
+            if len(sys.argv) != 2:
+                print("Usage: mam status")
+                sys.exit(1)
+
+            action_status()
+
         case "list":
             if len(sys.argv) != 2:
                 print("Usage: mam list")
                 sys.exit(1)
 
             action_list()
+
+        case "sync":
+            if len(sys.argv) != 2:
+                print("Usage: mam sync")
+                sys.exit(1)
+
+            action_sync()
 
         case "add":
             match arg(2):
@@ -357,7 +441,9 @@ if __name__ == "__main__":
             print("mam install    Install mam on this machine")
             print("mam auth       Authenticate this machine with a mam server")
             print("mam uninstall  Uninstall mam from this machine")
+            print("mam status     Show last sync status")
             print("mam list       List all synced objects")
+            print("mam sync       Sync all objects")
             print("mam add        Add an object to sync")
             print("mam remove     Remove an object from sync")
             sys.exit(1)
