@@ -15,9 +15,10 @@ Keep files synchronized between multiple Arch Linux machines.
 
 ## Supported Objects
 
-- Files: Synchronizes an entire file including ownership and permissions
-- Directories: Synchronizes an entire directory including all subdirectories, files and their owner and permission data
-- Packages: Makes sure a package is installed on all synchronized systems
+- Files: Synchronizes an entire file including ownership and permissions between systems.
+- Directories: Synchronizes an entire directory including all subdirectories, files and their owner and permission data between systems.
+- Packages: Makes sure a package is installed on all synchronized systems.
+- Partials: Synchronizes lines matching a pattern between systems. Always make sure to match exactly one line per pattern, otherwise the last matching line will override all matching lines. Try to capture the entire line in your pattern.
 
 ## Technical details
 
@@ -33,3 +34,7 @@ Remote changes always take precedence.
 ### Background synchronization
 
 Installing mam also creates a systemd service `/etc/systemd/system/mam.service` that is automatically enabled and started. This service triggers a sync action every 10 minutes. You can use `sudo mam status` to get the result of the last synchronization.
+
+### Partial line matching
+
+If no section is defined, a partial will apply to all lines matching the pattern. If a section is defined, the partial will apply to the first line matching the pattern _after_ any line matching the section.

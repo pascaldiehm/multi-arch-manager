@@ -3,6 +3,7 @@
 import base64
 import json
 import os
+import re
 import shutil
 import sys
 import urllib.request
@@ -56,6 +57,19 @@ def json_read(path: str, default: any = None):
 def json_write(path: str, data: dict):
     with open(path, "w") as f:
         json.dump(data, f)
+
+
+def lines_read(path: str) -> list[str]:
+    if not os.path.isfile(path):
+        return []
+
+    with open(path) as f:
+        return f.read().splitlines()
+
+
+def lines_write(path: str, lines: list[str]):
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
 
 
 def arg(n: int) -> str | None:
@@ -300,6 +314,111 @@ def package_install(obj: str):
     open(f"{DIR}/objects/packages/{obj}", "w").close()
 
 
+def partial_version(obj: str) -> int:
+    partial = b32d(obj)
+    if not os.path.isfile(partial):
+        return 0
+
+    stat = os.stat(partial)
+    return int(max(stat.st_mtime, stat.st_ctime))
+
+
+def partial_syncVersion(obj: str) -> tuple[int, int]:
+    data = json_read(f"{DIR}/objects/partials/{obj}", {"local": 0, "remote": 0})
+    return data["local"], data["remote"]
+
+
+def partial_backup(obj: str):
+    partial = b32d(obj)
+    if not os.path.isfile(partial):
+        return
+
+    stat = os.stat(partial)
+    shutil.copy(partial, f"{DIR}/backups/partials/{obj}")
+    os.chown(f"{DIR}/backups/partials/{obj}", stat.st_uid, stat.st_gid)
+    os.chmod(f"{DIR}/backups/partials/{obj}", stat.st_mode)
+
+
+def partial_restore(obj: str):
+    partial = b32d(obj)
+    if os.path.isfile(partial):
+        os.remove(partial)
+
+    if os.path.isfile(f"{DIR}/backups/partials/{obj}"):
+        shutil.move(f"{DIR}/backups/partials/{obj}", partial)
+
+    if os.path.isfile(f"{DIR}/objects/partials/{obj}"):
+        os.remove(f"{DIR}/objects/partials/{obj}")
+
+
+def partial_download(obj: str, version: int):
+    partial = b32d(obj)
+    dirs = makedirs(os.path.dirname(partial))
+    meta = api("partial-get-meta", {"id": obj})
+
+    lines = lines_read(partial)
+    content = api("partial-get-content", {"id": obj})
+    for cnt in content:
+        cnt["active"] = cnt["section"] == None
+
+    for i in range(len(lines)):
+        for cnt in content:
+            if cnt["active"] and re.match(cnt["pattern"], lines[i]):
+                lines[i] = cnt["value"]
+                cnt["active"] = cnt["section"] == None
+            elif not cnt["active"] and re.match(cnt["section"], lines[i]):
+                cnt["active"] = True
+
+    lines_write(partial, lines)
+    os.chown(partial, meta["owner"], meta["group"])
+    os.chmod(partial, meta["mode"])
+
+    json_write(f"{DIR}/objects/partials/{obj}", {"local": partial_version(obj), "remote": version})
+
+    created_dirs = json_read(f"{DIR}/objects/created_dirs", [])
+    for dir in dirs:
+        os.chown(dir, meta["owner"], meta["group"])
+        if not dir in created_dirs:
+            created_dirs.append(dir)
+
+    json_write(f"{DIR}/objects/created_dirs", created_dirs)
+
+
+def partial_upload(obj: str):
+    partial = b32d(obj)
+    version = partial_version(obj)
+    stat = os.stat(partial)
+
+    lines = lines_read(partial)
+    content = api("partial-get-content", {"id": obj})
+    for cnt in content:
+        cnt["active"] = cnt["section"] == None
+
+    for line in lines:
+        for cnt in content:
+            if cnt["active"] and re.match(cnt["pattern"], line):
+                cnt["value"] = line
+                cnt["active"] = cnt["section"] == None
+            elif not cnt["active"] and re.match(cnt["section"], line):
+                cnt["active"] = True
+
+    for cnt in content:
+        del cnt["active"]
+
+    api("partial-set-content", {"id": obj, "content": content, "version": version})
+    api("partial-set-meta", {"id": obj, "owner": stat.st_uid, "group": stat.st_gid, "mode": stat.st_mode})
+    json_write(f"{DIR}/objects/partials/{obj}", {"local": version, "remote": version})
+
+
+def partial_printDetails(obj: str):
+    content = api("partial-get-content", {"id": obj})
+    for cnt in content:
+        if cnt["section"] == None:
+            print(f"    /{cnt['pattern']}/: {cnt['value']}")
+        else:
+            print(f"    /{cnt['pattern']}/ after /{cnt['section']}/: {cnt['value']}")
+
+
 def action_install():
     print("Adding mam user...")
     if os.system("id mam") != 0:
@@ -320,7 +439,7 @@ def action_install():
         os.system("pacman --noconfirm -U /tmp/paru/paru-*.pkg.tar.zst")
 
     print("Creating directories...")
-    for type in ["directories", "files", "packages"]:
+    for type in ["directories", "files", "packages", "partials"]:
         os.makedirs(f"{DIR}/objects/{type}", exist_ok=True)
         os.makedirs(f"{DIR}/backups/{type}", exist_ok=True)
 
@@ -380,6 +499,10 @@ def action_uninstall():
     print("Restoring local packages...")
     for obj in os.listdir(f"{DIR}/objects/packages"):
         package_restore(obj)
+
+    print("Restoring local partials...")
+    for obj in os.listdir(f"{DIR}/objects/partials"):
+        partial_restore(obj)
 
     print("Removing created directories...")
     dirs = json_read(f"{DIR}/objects/created_dirs", [])
@@ -504,6 +627,41 @@ def action_list():
         if not obj in remote_objects:
             print(f"  {b32d(obj)} (local only)")
 
+    print("\nSynchronized partials:")
+    local_objects = os.listdir(f"{DIR}/objects/partials")
+    remote_objects = api("partial-list")
+
+    for obj in local_objects:
+        if not obj in remote_objects:
+            continue
+
+        partial = b32d(obj)
+        local_version = partial_version(obj)
+        remote_version = remote_objects[obj]
+        local_sync_version, remote_sync_version = partial_syncVersion(obj)
+
+        if remote_version > remote_sync_version:
+            print(f"  {partial} ({date(remote_version)}, remote changed)")
+        elif local_version > local_sync_version:
+            print(f"  {partial} ({date(local_version)}, local changed)")
+        elif local_version < local_sync_version:
+            print(f"  {partial} ({date(local_version)}, local deleted)")
+        else:
+            print(f"  {partial} ({date(remote_version)})")
+
+        partial_printDetails(obj)
+
+    for obj in remote_objects:
+        if not obj in local_objects:
+            partial = b32d(obj)
+            print(f"  {partial} ({date(remote_objects[obj])}, remote only)")
+            partial_printDetails(obj)
+
+    for obj in local_objects:
+        if not obj in remote_objects:
+            partial = b32d(obj)
+            print(f"  {partial} ({date(partial_version(obj))}, local only)")
+
 
 def action_sync():
     if not api("check"):
@@ -532,6 +690,12 @@ def action_sync():
     for package in local_packages:
         if not package in remote_packages:
             package_restore(package)
+
+    local_partials = os.listdir(f"{DIR}/objects/partials")
+    remote_partials = api("partial-list")
+    for partial in local_partials:
+        if not partial in remote_partials:
+            partial_restore(partial)
 
     for file in remote_files:
         if not file in local_files:
@@ -567,6 +731,20 @@ def action_sync():
 
         package_install(package)
 
+    for partial in remote_partials:
+        if not partial in local_partials:
+            partial_backup(partial)
+            partial_download(partial, remote_partials[partial])
+        else:
+            local_version = partial_version(partial)
+            remote_version = remote_partials[partial]
+            local_sync_version, remote_sync_version = partial_syncVersion(partial)
+
+            if remote_version > remote_sync_version or local_version < local_sync_version:
+                partial_download(partial, remote_version)
+            elif local_version > local_sync_version:
+                partial_upload(partial)
+
     with open(f"{DIR}/state", "w") as f:
         f.write(f"Last sync: {date()}")
 
@@ -580,6 +758,10 @@ def action_addFile(path: str):
     obj = b32e(file)
     if api("file-exists", {"id": obj}):
         print("File is already synced")
+        sys.exit(1)
+
+    if api("partial-exists", {"id": obj}):
+        print("File is already synced as a partial")
         sys.exit(1)
 
     directories = api("directory-list")
@@ -631,6 +813,12 @@ def action_addDirectory(path: str):
         print(f"Directory contains synced file {children[0]}")
         sys.exit(1)
 
+    partials = api("partial-list")
+    children = [b32d(partial) for partial in partials if b32d(partial).startswith(directory)]
+    if len(children) > 0:
+        print(f"Directory contains synced partial {children[0]}")
+        sys.exit(1)
+
     directory_backup(obj)
     api("directory-create", {"id": obj})
     directory_upload(obj)
@@ -674,6 +862,54 @@ def action_removePackage(name: str):
     package_restore(obj)
 
     print("Package removed")
+
+
+def action_addPartial(path: str, pattern: str, section: str | None):
+    partial = os.path.abspath(path)
+    if not os.path.isfile(partial):
+        print("Partial does not exist")
+        sys.exit(1)
+
+    obj = b32e(partial)
+    if api("file-exists", {"id": obj}):
+        print("Partial is already synced as a file")
+        sys.exit(1)
+
+    directories = api("directory-list")
+    parents = [b32d(dir) for dir in directories if partial.startswith(b32d(dir))]
+    if len(parents) > 0:
+        print(f"Partial is part of synced directory {parents[0]}")
+        sys.exit(1)
+
+    if not api("partial-exists", {"id": obj}):
+        partial_backup(obj)
+        api("partial-create", {"id": obj})
+
+    content = api("partial-get-content", {"id": obj})
+    content.append({"pattern": pattern, "value": "", "section": section})
+    api("partial-set-content", {"id": obj, "content": content, "version": int(datetime.now().timestamp())})
+    partial_upload(obj)
+
+    print("Partial added")
+
+
+def action_removePartial(path: str, pattern: str | None, section: str | None):
+    partial = os.path.abspath(path)
+    obj = b32e(partial)
+    if not api("partial-exists", {"id": obj}):
+        print("Partial is not synced")
+        sys.exit(1)
+
+    if pattern == None:
+        api("partial-delete", {"id": obj})
+        partial_restore(obj)
+    else:
+        content = api("partial-get-content", {"id": obj})
+        content = [cnt for cnt in content if cnt["pattern"] != pattern or cnt["section"] != section]
+        api("partial-set-content", {"id": obj, "content": content, "version": int(datetime.now().timestamp())})
+        partial_download(obj, int(datetime.now().timestamp()))
+
+    print("Partial removed")
 
 
 if __name__ == "__main__":
@@ -750,13 +986,21 @@ if __name__ == "__main__":
 
                     action_addPackage(arg(3))
 
+                case "partial":
+                    if len(sys.argv) < 5 or len(sys.argv) > 6:
+                        print("Usage: mam add partial <path> <pattern> [section]")
+                        sys.exit(1)
+
+                    action_addPartial(arg(3), arg(4), arg(5))
+
                 case _:
                     print("Usage: mam add <object>")
                     print("Add an object to sync")
                     print()
-                    print("mam add file <path>       Add a file to sync")
-                    print("mam add directory <path>  Add a directory to sync")
-                    print("mam add package <name>    Add a package to sync")
+                    print("mam add file <path>                         Add a file to sync")
+                    print("mam add directory <path>                    Add a directory to sync")
+                    print("mam add package <name>                      Add a package to sync")
+                    print("mam add partial <path> <pattern> [section]  Add a partial to sync")
                     sys.exit(1)
 
         case "remove":
@@ -782,13 +1026,21 @@ if __name__ == "__main__":
 
                     action_removePackage(arg(3))
 
+                case "partial":
+                    if len(sys.argv) < 4 or len(sys.argv) > 6:
+                        print("Usage: mam remove partial <path> [pattern [section]]")
+                        sys.exit(1)
+
+                    action_removePartial(arg(3), arg(4), arg(5))
+
                 case _:
                     print("Usage: mam remove <object>")
                     print("Remove an object from sync")
                     print()
-                    print("mam remove file <path>       Remove a file from sync")
-                    print("mam remove directory <path>  Remove a directory from sync")
-                    print("mam remove package <name>    Remove a package from sync")
+                    print("mam remove file <path>                         Remove a file from sync")
+                    print("mam remove directory <path>                    Remove a directory from sync")
+                    print("mam remove package <name>                      Remove a package from sync")
+                    print("mam remove partial <path> [pattern [section]]  Remove a partial from sync")
                     sys.exit(1)
 
         case _:

@@ -55,6 +55,15 @@ $db->exec("CREATE TABLE IF NOT EXISTS `directories` (
 $db->exec("CREATE TABLE IF NOT EXISTS `packages` (
     `id` TEXT PRIMARY KEY
 )");
+$db->exec("CREATE TABLE IF NOT EXISTS `partials` (
+    `id` TEXT PRIMARY KEY,
+    `version` INTEGER DEFAULT 0,
+    `content` TEXT DEFAULT '[]',
+    `fallback` TEXT DEFAULT '',
+    `owner` INTEGER DEFAULT 0,
+    `group` INTEGER DEFAULT 0,
+    `mode` INTEGER DEFAULT 0
+)");
 
 switch (arg("action")) {
     case "check":
@@ -196,6 +205,76 @@ switch (arg("action")) {
         $packages = [];
         while ($row = $result->fetchArray(SQLITE3_ASSOC)) $packages[] = $row["id"];
         respond($packages);
+
+    case "partial-create":
+        $stmt = $db->prepare("INSERT INTO `partials` (`id`) VALUES (:id)");
+        $stmt->bindValue(":id", arg("id"));
+        $stmt->execute();
+        respond();
+
+    case "partial-delete":
+        $stmt = $db->prepare("DELETE FROM `partials` WHERE `id` = :id");
+        $stmt->bindValue(":id", arg("id"));
+        $stmt->execute();
+        respond();
+
+    case "partial-exists":
+        $stmt = $db->prepare("SELECT COUNT(*) FROM `partials` WHERE `id` = :id");
+        $stmt->bindValue(":id", arg("id"));
+        $result = $stmt->execute();
+        respond($result->fetchArray()[0] > 0);
+
+    case "partial-list":
+        $stmt = $db->prepare("SELECT `id`, `version` FROM `partials`");
+        $result = $stmt->execute();
+        $partials = [];
+        while ($row = $result->fetchArray(SQLITE3_ASSOC)) $partials[$row["id"]] = $row["version"];
+        respond($partials);
+
+    case "partial-set-content":
+        $stmt = $db->prepare("UPDATE `partials` SET `content` = :content, `version` = :version WHERE `id` = :id");
+        $stmt->bindValue(":id", arg("id"));
+        $stmt->bindValue(":content", json_encode(arg("content")));
+        $stmt->bindValue(":version", arg("version"));
+        $stmt->execute();
+        respond();
+
+    case "partial-set-meta":
+        $stmt = $db->prepare("UPDATE `partials` SET `owner` = :owner, `group` = :group, `mode` = :mode WHERE `id` = :id");
+        $stmt->bindValue(":id", arg("id"));
+        $stmt->bindValue(":owner", arg("owner"));
+        $stmt->bindValue(":group", arg("group"));
+        $stmt->bindValue(":mode", arg("mode"));
+        $stmt->execute();
+        respond();
+
+    case "partial-set-fallback":
+        $stmt = $db->prepare("UPDATE `partials` SET `fallback` = :fallback WHERE `id` = :id");
+        $stmt->bindValue(":id", arg("id"));
+        $stmt->bindValue(":fallback", arg("fallback"));
+        $stmt->execute();
+        respond();
+
+    case "partial-get-content":
+        $stmt = $db->prepare("SELECT `content` FROM `partials` WHERE `id` = :id");
+        $stmt->bindValue(":id", arg("id"));
+        $result = $stmt->execute();
+        $row = $result->fetchArray(SQLITE3_ASSOC);
+        respond(json_decode($row["content"], true));
+
+    case "partial-get-meta":
+        $stmt = $db->prepare("SELECT `version`, `owner`, `group`, `mode` FROM `partials` WHERE `id` = :id");
+        $stmt->bindValue(":id", arg("id"));
+        $result = $stmt->execute();
+        $row = $result->fetchArray(SQLITE3_ASSOC);
+        respond($row);
+
+    case "partial-get-fallback":
+        $stmt = $db->prepare("SELECT `fallback` FROM `partials` WHERE `id` = :id");
+        $stmt->bindValue(":id", arg("id"));
+        $result = $stmt->execute();
+        $row = $result->fetchArray(SQLITE3_ASSOC);
+        respond($row["fallback"]);
 
     default:
         error("Invalid action: " . arg("action"));
