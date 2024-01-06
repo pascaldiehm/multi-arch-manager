@@ -552,7 +552,7 @@ def action_sync():
             local_sync_version, remote_sync_version = file_syncVersion(file)
 
             if remote_version > remote_sync_version or local_version < local_sync_version:
-                file_download(file)
+                file_download(file, remote_version)
             elif local_version > local_sync_version:
                 file_upload(file)
 
@@ -566,7 +566,7 @@ def action_sync():
             local_sync_version, remote_sync_version = directory_syncVersion(directory)
 
             if remote_version > remote_sync_version or local_version < local_sync_version:
-                directory_download(directory)
+                directory_download(directory, remote_version)
             elif local_version > local_sync_version:
                 directory_upload(directory)
 
