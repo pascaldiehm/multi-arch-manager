@@ -528,6 +528,23 @@ def action_uninstall():
     print("Done!")
 
 
+def action_update():
+    if not api("check"):
+        print("Authentication failed.")
+        sys.exit(1)
+
+    req = urllib.request.Request(CONFIG["address"])
+    try:
+        res = urllib.request.urlopen(req).read().decode()
+        with open("/usr/local/bin/mam", "w") as f:
+            f.write(res)
+    except:
+        print("Could not connect to server.")
+        sys.exit(1)
+
+    print("Updated!")
+
+
 def action_status():
     if not os.path.isfile(f"{DIR}/config"):
         print("Not configured.")
@@ -942,6 +959,13 @@ if __name__ == "__main__":
 
             action_uninstall()
 
+        case "update":
+            if len(sys.argv) != 2:
+                print("Usage: mam update")
+                sys.exit(1)
+
+            action_update()
+
         case "status":
             if len(sys.argv) != 2:
                 print("Usage: mam status")
@@ -1050,6 +1074,7 @@ if __name__ == "__main__":
             print("mam install    Install mam on this machine")
             print("mam auth       Authenticate this machine with a mam server")
             print("mam uninstall  Uninstall mam from this machine")
+            print("mam update     Update mam binary to latest version")
             print("mam status     Show last sync status")
             print("mam list       List all synced objects")
             print("mam sync       Sync all objects")
