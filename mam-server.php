@@ -35,7 +35,7 @@ if (!$PASSWORD) error("MAM_PASSWORD not set");
 if (is_null($data)) error("Invalid request");
 if (arg("password") !== $PASSWORD) error("Invalid password");
 
-$db = new SQLite3("mam.db");
+$db = new SQLite3("/data/mam.db");
 $db->exec("CREATE TABLE IF NOT EXISTS `files` (
     `id` TEXT PRIMARY KEY,
     `version` INTEGER DEFAULT 0,
