@@ -419,6 +419,98 @@ def partial_printDetails(obj: str):
             print(f"    /{cnt['pattern']}/ after /{cnt['section']}/: {cnt['value']}")
 
 
+def additional_version(obj: str) -> int:
+    additional = b32d(obj)
+    if not os.path.isfile(additional):
+        return 0
+
+    stat = os.stat(additional)
+    return int(max(stat.st_mtime, stat.st_ctime))
+
+
+def additional_syncVersion(obj: str) -> tuple[int, int]:
+    data = json_read(f"{DIR}/objects/additionals/{obj}", {"local": 0, "remote": 0})
+    return data["local"], data["remote"]
+
+
+def additional_backup(obj: str):
+    additional = b32d(obj)
+    if not os.path.isfile(additional):
+        return
+
+    stat = os.stat(additional)
+    shutil.copy(additional, f"{DIR}/backups/additionals/{obj}")
+    os.chown(f"{DIR}/backups/additionals/{obj}", stat.st_uid, stat.st_gid)
+    os.chmod(f"{DIR}/backups/additionals/{obj}", stat.st_mode)
+
+
+def additional_restore(obj: str):
+    additional = b32d(obj)
+    if os.path.isfile(additional):
+        os.remove(additional)
+
+    if os.path.isfile(f"{DIR}/backups/additionals/{obj}"):
+        shutil.move(f"{DIR}/backups/additionals/{obj}", additional)
+
+    if os.path.isfile(f"{DIR}/objects/additionals/{obj}"):
+        os.remove(f"{DIR}/objects/additionals/{obj}")
+
+
+def additional_download(obj: str, version: int):
+    additional = b32d(obj)
+    dirs = makedirs(os.path.dirname(additional))
+    meta = api("additional-get-meta", {"id": obj})
+
+    lines = lines_read(additional)
+    prefix = api("additional-get-prefix", {"id": obj})
+    content = api("additional-get-content", {"id": obj})
+    if f"{prefix} BEGIN MAM ADDITIONAL" in lines:
+        idx = lines.index(f"{prefix} BEGIN MAM ADDITIONAL") + 1
+        while lines[idx] != f"{prefix} END MAM ADDITIONAL":
+            lines.pop(idx)
+
+        for line in content:
+            lines.insert(idx, line)
+            idx += 1
+    else:
+        lines.append(f"{prefix} BEGIN MAM ADDITIONAL")
+        lines += content
+        lines.append(f"{prefix} END MAM ADDITIONAL")
+
+    lines_write(additional, lines)
+    os.chown(additional, meta["owner"], meta["group"])
+    os.chmod(additional, meta["mode"])
+
+    json_write(f"{DIR}/objects/additionals/{obj}", {"local": additional_version(obj), "remote": version})
+
+    created_dirs = json_read(f"{DIR}/objects/created_dirs", [])
+    for dir in dirs:
+        os.chown(dir, meta["owner"], meta["group"])
+        if not dir in created_dirs:
+            created_dirs.append(dir)
+
+    json_write(f"{DIR}/objects/created_dirs", created_dirs)
+
+
+def additional_upload(obj: str):
+    additional = b32d(obj)
+    version = additional_version(obj)
+    stat = os.stat(additional)
+
+    lines = lines_read(additional)
+    prefix = api("additional-get-prefix", {"id": obj})
+    content = []
+    if f"{prefix} BEGIN MAM ADDITIONAL" in lines:
+        idx = lines.index(f"{prefix} BEGIN MAM ADDITIONAL") + 1
+        while lines[idx] != f"{prefix} END MAM ADDITIONAL":
+            content.append(lines[idx])
+            idx += 1
+
+    api("additional-set-content", {"id": obj, "content": content, "version": version})
+    api("additional-set-meta", {"id": obj, "owner": stat.st_uid, "group": stat.st_gid, "mode": stat.st_mode})
+    json_write(f"{DIR}/objects/additionals/{obj}", {"local": version, "remote": version})
+
+
 def action_install():
     print("Adding mam user...")
     if os.system("id mam") != 0:
@@ -439,7 +531,7 @@ def action_install():
         os.system("pacman --noconfirm -U /tmp/paru/paru-*.pkg.tar.zst")
 
     print("Creating directories...")
-    for type in ["directories", "files", "packages", "partials"]:
+    for type in ["directories", "files", "packages", "partials", "additionals"]:
         os.makedirs(f"{DIR}/objects/{type}", exist_ok=True)
         os.makedirs(f"{DIR}/backups/{type}", exist_ok=True)
 
@@ -503,6 +595,10 @@ def action_uninstall():
     print("Restoring local partials...")
     for obj in os.listdir(f"{DIR}/objects/partials"):
         partial_restore(obj)
+
+    print("Restoring local additionals...")
+    for obj in os.listdir(f"{DIR}/objects/additionals"):
+        additional_restore(obj)
 
     print("Removing created directories...")
     dirs = json_read(f"{DIR}/objects/created_dirs", [])
@@ -679,6 +775,38 @@ def action_list():
             partial = b32d(obj)
             print(f"  {partial} ({date(partial_version(obj))}, local only)")
 
+    print("\nSynchronized additionals:")
+    local_objects = os.listdir(f"{DIR}/objects/additionals")
+    remote_objects = api("additional-list")
+
+    for obj in local_objects:
+        if not obj in remote_objects:
+            continue
+
+        additional = b32d(obj)
+        local_version = additional_version(obj)
+        remote_version = remote_objects[obj]
+        local_sync_version, remote_sync_version = additional_syncVersion(obj)
+
+        if remote_version > remote_sync_version:
+            print(f"  {additional} ({date(remote_version)}, remote changed)")
+        elif local_version > local_sync_version:
+            print(f"  {additional} ({date(local_version)}, local changed)")
+        elif local_version < local_sync_version:
+            print(f"  {additional} ({date(local_version)}, local deleted)")
+        else:
+            print(f"  {additional} ({date(remote_version)})")
+
+    for obj in remote_objects:
+        if not obj in local_objects:
+            additional = b32d(obj)
+            print(f"  {additional} ({date(remote_objects[obj])}, remote only)")
+
+    for obj in local_objects:
+        if not obj in remote_objects:
+            additional = b32d(obj)
+            print(f"  {additional} ({date(additional_version(obj))}, local only)")
+
 
 def action_sync():
     if not api("check"):
@@ -713,6 +841,12 @@ def action_sync():
     for partial in local_partials:
         if not partial in remote_partials:
             partial_restore(partial)
+
+    local_additionals = os.listdir(f"{DIR}/objects/additionals")
+    remote_additionals = api("additional-list")
+    for additional in local_additionals:
+        if not additional in remote_additionals:
+            additional_restore(additional)
 
     for file in remote_files:
         if not file in local_files:
@@ -762,6 +896,20 @@ def action_sync():
             elif local_version > local_sync_version:
                 partial_upload(partial)
 
+    for additional in remote_additionals:
+        if not additional in local_additionals:
+            additional_backup(additional)
+            additional_download(additional, remote_additionals[additional])
+        else:
+            local_version = additional_version(additional)
+            remote_version = remote_additionals[additional]
+            local_sync_version, remote_sync_version = additional_syncVersion(additional)
+
+            if remote_version > remote_sync_version or local_version < local_sync_version:
+                additional_download(additional, remote_version)
+            elif local_version > local_sync_version:
+                additional_upload(additional)
+
     with open(f"{DIR}/state", "w") as f:
         f.write(f"Last sync: {date()}")
 
@@ -779,6 +927,10 @@ def action_addFile(path: str):
 
     if api("partial-exists", {"id": obj}):
         print("File is already synced as a partial")
+        sys.exit(1)
+
+    if api("additional-exists", {"id": obj}):
+        print("File is already synced as an additional")
         sys.exit(1)
 
     directories = api("directory-list")
@@ -834,6 +986,12 @@ def action_addDirectory(path: str):
     children = [b32d(partial) for partial in partials if b32d(partial).startswith(directory)]
     if len(children) > 0:
         print(f"Directory contains synced partial {children[0]}")
+        sys.exit(1)
+
+    additionals = api("additional-list")
+    children = [b32d(additional) for additional in additionals if b32d(additional).startswith(directory)]
+    if len(children) > 0:
+        print(f"Directory contains synced additional {children[0]}")
         sys.exit(1)
 
     directory_backup(obj)
@@ -892,6 +1050,10 @@ def action_addPartial(path: str, pattern: str, section: str | None):
         print("Partial is already synced as a file")
         sys.exit(1)
 
+    if api("additional-exists", {"id": obj}):
+        print("Partial is already synced as an additional")
+        sys.exit(1)
+
     directories = api("directory-list")
     parents = [b32d(dir) for dir in directories if partial.startswith(b32d(dir))]
     if len(parents) > 0:
@@ -927,6 +1089,58 @@ def action_removePartial(path: str, pattern: str | None, section: str | None):
         partial_download(obj, int(datetime.now().timestamp()))
 
     print("Partial removed")
+
+
+def action_addAdditional(path: str, prefix: str):
+    additional = os.path.abspath(path)
+    if not os.path.isfile(additional):
+        print("Additional does not exist")
+        sys.exit(1)
+
+    obj = b32e(additional)
+    if api("additional-exists", {"id": obj}):
+        print("Additional is already synced")
+        sys.exit(1)
+
+    if api("file-exists", {"id": obj}):
+        print("Additional is already synced as a file")
+        sys.exit(1)
+
+    if api("partial-exists", {"id": obj}):
+        print("Additional is already synced as a partial")
+        sys.exit(1)
+
+    directories = api("directory-list")
+    parents = [b32d(dir) for dir in directories if additional.startswith(b32d(dir))]
+    if len(parents) > 0:
+        print(f"Additional is part of synced directory {parents[0]}")
+        sys.exit(1)
+
+    additional_backup(obj)
+
+    lines = lines_read(additional)
+    if not f"{prefix} BEGIN MAM ADDITIONAL" in lines:
+        lines.append(f"{prefix} BEGIN MAM ADDITIONAL")
+        lines.append(f"{prefix} END MAM ADDITIONAL")
+        lines_write(additional, lines)
+
+    api("additional-create", {"id": obj, "prefix": prefix})
+    additional_upload(obj)
+
+    print("Additional added")
+
+
+def action_removeAdditional(path: str):
+    additional = os.path.abspath(path)
+    obj = b32e(additional)
+    if not api("additional-exists", {"id": obj}):
+        print("Additional is not synced")
+        sys.exit(1)
+
+    api("additional-delete", {"id": obj})
+    additional_restore(obj)
+
+    print("Additional removed")
 
 
 if __name__ == "__main__":
@@ -1017,6 +1231,13 @@ if __name__ == "__main__":
 
                     action_addPartial(arg(3), arg(4), arg(5))
 
+                case "additional":
+                    if len(sys.argv) < 5:
+                        print("Usage: mam add additional <path> <prefix>")
+                        sys.exit(1)
+
+                    action_addAdditional(arg(3), arg(4))
+
                 case _:
                     print("Usage: mam add <object>")
                     print("Add an object to sync")
@@ -1025,6 +1246,7 @@ if __name__ == "__main__":
                     print("mam add directory <path>                    Add a directory to sync")
                     print("mam add package <name>                      Add a package to sync")
                     print("mam add partial <path> <pattern> [section]  Add a partial to sync")
+                    print("mam add additional <path> <prefix>          Add an additional to sync")
                     sys.exit(1)
 
         case "remove":
@@ -1057,6 +1279,13 @@ if __name__ == "__main__":
 
                     action_removePartial(arg(3), arg(4), arg(5))
 
+                case "additional":
+                    if len(sys.argv) < 4:
+                        print("Usage: mam remove additional <path>")
+                        sys.exit(1)
+
+                    action_removeAdditional(arg(3))
+
                 case _:
                     print("Usage: mam remove <object>")
                     print("Remove an object from sync")
@@ -1065,6 +1294,7 @@ if __name__ == "__main__":
                     print("mam remove directory <path>                    Remove a directory from sync")
                     print("mam remove package <name>                      Remove a package from sync")
                     print("mam remove partial <path> [pattern [section]]  Remove a partial from sync")
+                    print("mam remove additional <path>                   Remove an additional from sync")
                     sys.exit(1)
 
         case _:

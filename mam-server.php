@@ -63,6 +63,15 @@ $db->exec("CREATE TABLE IF NOT EXISTS `partials` (
     `group` INTEGER DEFAULT 0,
     `mode` INTEGER DEFAULT 0
 )");
+$db->exec("CREATE TABLE IF NOT EXISTS `additionals` (
+    `id` TEXT PRIMARY KEY,
+    `version` INTEGER DEFAULT 0,
+    `prefix` TEXT DEFAULT '',
+    `content` TEXT DEFAULT '[]',
+    `owner` INTEGER DEFAULT 0,
+    `group` INTEGER DEFAULT 0,
+    `mode` INTEGER DEFAULT 0
+)");
 
 switch (arg("action")) {
     case "check":
@@ -256,6 +265,70 @@ switch (arg("action")) {
 
     case "partial-get-meta":
         $stmt = $db->prepare("SELECT `version`, `owner`, `group`, `mode` FROM `partials` WHERE `id` = :id");
+        $stmt->bindValue(":id", arg("id"));
+        $result = $stmt->execute();
+        $row = $result->fetchArray(SQLITE3_ASSOC);
+        respond($row);
+
+    case "additional-create":
+        $stmt = $db->prepare("INSERT INTO `additionals` (`id`, `prefix`) VALUES (:id, :prefix)");
+        $stmt->bindValue(":id", arg("id"));
+        $stmt->bindValue(":prefix", arg("prefix"));
+        $stmt->execute();
+        respond();
+
+    case "additional-delete":
+        $stmt = $db->prepare("DELETE FROM `additionals` WHERE `id` = :id");
+        $stmt->bindValue(":id", arg("id"));
+        $stmt->execute();
+        respond();
+
+    case "additional-exists":
+        $stmt = $db->prepare("SELECT COUNT(*) FROM `additionals` WHERE `id` = :id");
+        $stmt->bindValue(":id", arg("id"));
+        $result = $stmt->execute();
+        respond($result->fetchArray()[0] > 0);
+
+    case "additional-list":
+        $stmt = $db->prepare("SELECT `id`, `version` FROM `additionals`");
+        $result = $stmt->execute();
+        $additionals = [];
+        while ($row = $result->fetchArray(SQLITE3_ASSOC)) $additionals[$row["id"]] = $row["version"];
+        respond($additionals);
+
+    case "additional-set-content":
+        $stmt = $db->prepare("UPDATE `additionals` SET `content` = :content, `version` = :version WHERE `id` = :id");
+        $stmt->bindValue(":id", arg("id"));
+        $stmt->bindValue(":content", json_encode(arg("content")));
+        $stmt->bindValue(":version", arg("version"));
+        $stmt->execute();
+        respond();
+
+    case "additional-set-meta":
+        $stmt = $db->prepare("UPDATE `additionals` SET `owner` = :owner, `group` = :group, `mode` = :mode WHERE `id` = :id");
+        $stmt->bindValue(":id", arg("id"));
+        $stmt->bindValue(":owner", arg("owner"));
+        $stmt->bindValue(":group", arg("group"));
+        $stmt->bindValue(":mode", arg("mode"));
+        $stmt->execute();
+        respond();
+
+    case "additional-get-prefix":
+        $stmt = $db->prepare("SELECT `prefix` FROM `additionals` WHERE `id` = :id");
+        $stmt->bindValue(":id", arg("id"));
+        $result = $stmt->execute();
+        $row = $result->fetchArray(SQLITE3_ASSOC);
+        respond($row["prefix"]);
+
+    case "additional-get-content":
+        $stmt = $db->prepare("SELECT `content` FROM `additionals` WHERE `id` = :id");
+        $stmt->bindValue(":id", arg("id"));
+        $result = $stmt->execute();
+        $row = $result->fetchArray(SQLITE3_ASSOC);
+        respond(json_decode($row["content"], true));
+
+    case "additional-get-meta":
+        $stmt = $db->prepare("SELECT `version`, `owner`, `group`, `mode` FROM `additionals` WHERE `id` = :id");
         $stmt->bindValue(":id", arg("id"));
         $result = $stmt->execute();
         $row = $result->fetchArray(SQLITE3_ASSOC);

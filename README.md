@@ -19,6 +19,7 @@ Keep files synchronized between multiple Arch Linux machines.
 - Directories: Synchronizes an entire directory including all subdirectories, files and their owner and permission data between systems.
 - Packages: Makes sure a package is installed on all synchronized systems.
 - Partials: Synchronizes lines matching a pattern between systems. Always make sure to match exactly one line per pattern, otherwise the last matching line will override all matching lines. Try to capture the entire line in your pattern.
+- Additionals: Synchronizes a defined block in a file that will also be appended to new files. Requires the prefix to start a line comment in the given file.
 
 ## Technical details
 
