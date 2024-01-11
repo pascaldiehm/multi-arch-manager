@@ -59,7 +59,6 @@ $db->exec("CREATE TABLE IF NOT EXISTS `partials` (
     `id` TEXT PRIMARY KEY,
     `version` INTEGER DEFAULT 0,
     `content` TEXT DEFAULT '[]',
-    `fallback` TEXT DEFAULT '',
     `owner` INTEGER DEFAULT 0,
     `group` INTEGER DEFAULT 0,
     `mode` INTEGER DEFAULT 0
@@ -248,13 +247,6 @@ switch (arg("action")) {
         $stmt->execute();
         respond();
 
-    case "partial-set-fallback":
-        $stmt = $db->prepare("UPDATE `partials` SET `fallback` = :fallback WHERE `id` = :id");
-        $stmt->bindValue(":id", arg("id"));
-        $stmt->bindValue(":fallback", arg("fallback"));
-        $stmt->execute();
-        respond();
-
     case "partial-get-content":
         $stmt = $db->prepare("SELECT `content` FROM `partials` WHERE `id` = :id");
         $stmt->bindValue(":id", arg("id"));
@@ -268,13 +260,6 @@ switch (arg("action")) {
         $result = $stmt->execute();
         $row = $result->fetchArray(SQLITE3_ASSOC);
         respond($row);
-
-    case "partial-get-fallback":
-        $stmt = $db->prepare("SELECT `fallback` FROM `partials` WHERE `id` = :id");
-        $stmt->bindValue(":id", arg("id"));
-        $result = $stmt->execute();
-        $row = $result->fetchArray(SQLITE3_ASSOC);
-        respond($row["fallback"]);
 
     default:
         error("Invalid action: " . arg("action"));
