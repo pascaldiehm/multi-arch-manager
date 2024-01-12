@@ -663,10 +663,10 @@ def action_list():
         sys.exit(1)
 
     print("Synchronized files:")
-    local_objects: list[str] = os.listdir(f"{DIR}/objects/files")
-    remote_objects: dict[str, str] = api("file-list")
+    local_objects = sorted(os.listdir(f"{DIR}/objects/files"), key=lambda obj: b32d(obj))
+    remote_objects = api("file-list")
 
-    for obj in sorted(local_objects, key=lambda obj: b32d(obj)):
+    for obj in local_objects:
         if not obj in remote_objects:
             continue
 
@@ -684,21 +684,21 @@ def action_list():
         else:
             print(f"  {file} ({date(remote_version)})")
 
-    for obj in sorted(remote_objects.keys(), key=lambda obj: b32d(obj)):
+    for obj in remote_objects:
         if not obj in local_objects:
             file = b32d(obj)
             print(f"  {file} ({date(remote_objects[obj])}, remote only)")
 
-    for obj in sorted(local_objects, key=lambda obj: b32d(obj)):
+    for obj in local_objects:
         if not obj in remote_objects:
             file = b32d(obj)
             print(f"  {file} ({date(file_version(obj))}, local only)")
 
     print("\nSynchronized directories:")
-    local_objects: list[str] = os.listdir(f"{DIR}/objects/directories")
-    remote_objects: dict[str, str] = api("directory-list")
+    local_objects = sorted(os.listdir(f"{DIR}/objects/directories"), key=lambda obj: b32d(obj))
+    remote_objects = api("directory-list")
 
-    for obj in sorted(local_objects, key=lambda obj: b32d(obj)):
+    for obj in local_objects:
         if not obj in remote_objects:
             continue
 
@@ -716,37 +716,37 @@ def action_list():
         else:
             print(f"  {directory} ({date(remote_version)})")
 
-    for obj in sorted(remote_objects.keys(), key=lambda obj: b32d(obj)):
+    for obj in remote_objects:
         if not obj in local_objects:
             directory = b32d(obj)
             print(f"  {directory} ({date(remote_objects[obj])}, remote only)")
 
-    for obj in sorted(local_objects, key=lambda obj: b32d(obj)):
+    for obj in local_objects:
         if not obj in remote_objects:
             directory = b32d(obj)
             print(f"  {directory} ({date(directory_version(obj))}, local only)")
 
     print("\nSynchronized packages:")
-    local_objects: list[str] = os.listdir(f"{DIR}/objects/packages")
-    remote_objects: list[str] = api("package-list")
+    local_objects = sorted(os.listdir(f"{DIR}/objects/packages"), key=lambda obj: b32d(obj))
+    remote_objects = api("package-list")
 
-    for obj in sorted(local_objects, key=lambda obj: b32d(obj)):
+    for obj in local_objects:
         if obj in remote_objects:
             print(f"  {b32d(obj)}")
 
-    for obj in sorted(remote_objects, key=lambda obj: b32d(obj)):
+    for obj in remote_objects:
         if not obj in local_objects:
             print(f"  {b32d(obj)} (remote only)")
 
-    for obj in sorted(local_objects, key=lambda obj: b32d(obj)):
+    for obj in local_objects:
         if not obj in remote_objects:
             print(f"  {b32d(obj)} (local only)")
 
     print("\nSynchronized partials:")
-    local_objects: list[str] = os.listdir(f"{DIR}/objects/partials")
-    remote_objects: dict = api("partial-list")
+    local_objects = sorted(os.listdir(f"{DIR}/objects/partials"), key=lambda obj: b32d(obj))
+    remote_objects = api("partial-list")
 
-    for obj in sorted(local_objects, key=lambda obj: b32d(obj)):
+    for obj in local_objects:
         if not obj in remote_objects:
             continue
 
@@ -766,22 +766,22 @@ def action_list():
 
         partial_printDetails(obj)
 
-    for obj in sorted(remote_objects.keys(), key=lambda obj: b32d(obj)):
+    for obj in remote_objects:
         if not obj in local_objects:
             partial = b32d(obj)
             print(f"  {partial} ({date(remote_objects[obj])}, remote only)")
             partial_printDetails(obj)
 
-    for obj in sorted(local_objects, key=lambda obj: b32d(obj)):
+    for obj in local_objects:
         if not obj in remote_objects:
             partial = b32d(obj)
             print(f"  {partial} ({date(partial_version(obj))}, local only)")
 
     print("\nSynchronized additionals:")
-    local_objects: list[str] = os.listdir(f"{DIR}/objects/additionals")
-    remote_objects: dict = api("additional-list")
+    local_objects = sorted(os.listdir(f"{DIR}/objects/additionals"), key=lambda obj: b32d(obj))
+    remote_objects = api("additional-list")
 
-    for obj in sorted(local_objects, key=lambda obj: b32d(obj)):
+    for obj in local_objects:
         if not obj in remote_objects:
             continue
 
@@ -799,12 +799,12 @@ def action_list():
         else:
             print(f"  {additional} ({date(remote_version)})")
 
-    for obj in sorted(remote_objects.keys(), key=lambda obj: b32d(obj)):
+    for obj in remote_objects:
         if not obj in local_objects:
             additional = b32d(obj)
             print(f"  {additional} ({date(remote_objects[obj])}, remote only)")
 
-    for obj in sorted(local_objects, key=lambda obj: b32d(obj)):
+    for obj in local_objects:
         if not obj in remote_objects:
             additional = b32d(obj)
             print(f"  {additional} ({date(additional_version(obj))}, local only)")
