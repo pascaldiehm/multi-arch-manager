@@ -554,7 +554,7 @@ def action_setup(first: bool):
     with open("/etc/systemd/system/mam.service", "w") as f:
         f.write("[Unit]\n")
         f.write("Description=MAM Daemon\n")
-        f.write("After=network.target\n")
+        f.write("After=network-online.target\n")
         f.write("\n")
         f.write("[Service]\n")
         f.write("Type=simple\n")
