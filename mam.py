@@ -511,7 +511,7 @@ def additional_upload(obj: str):
     json_write(f"{DIR}/objects/additionals/{obj}", {"local": version, "remote": version})
 
 
-def action_setup(first: bool):
+def action_install():
     print("Adding mam user...")
     if os.system("id mam") != 0:
         os.system("useradd --system mam")
@@ -519,36 +519,23 @@ def action_setup(first: bool):
     with open("/etc/sudoers.d/mam", "w") as f:
         f.write("mam ALL=(root) NOPASSWD: /usr/bin/pacman\n")
 
-    if first:
-        print("Installing dependencies...")
-        os.system("pacman --noconfirm -Syu git fakeroot binutils")
-        if os.system("paru --version") != 0:
-            if os.path.isdir("/tmp/paru"):
-                shutil.rmtree("/tmp/paru")
+    print("Installing dependencies...")
+    if os.system("paru --version") != 0:
+        if os.path.isdir("/tmp/paru"):
+            shutil.rmtree("/tmp/paru")
 
-            os.system("git clone https://aur.archlinux.org/paru-bin.git /tmp/paru && chown -R mam:mam /tmp/paru")
-            os.system("mkdir -p /tmp/mam && chown mam:mam /tmp/mam")
-            os.system("cd /tmp/paru && sudo -u mam HOME=/tmp/mam makepkg")
-            os.system("pacman --noconfirm -U /tmp/paru/paru-*.pkg.tar.zst")
+        os.system("git clone https://aur.archlinux.org/paru.git /tmp/paru && chown -R mam:mam /tmp/paru")
+        os.system("mkdir -p /tmp/mam && chown mam:mam /tmp/mam")
+        os.system("cd /tmp/paru && sudo -u mam HOME=/tmp/mam makepkg -sir")
 
     print("Creating directories...")
-    for type in ["directories", "files", "packages", "partials", "additionals"]:
+    for type in ["files", "directories", "packages", "partials", "additionals"]:
         os.makedirs(f"{DIR}/objects/{type}", exist_ok=True)
         os.makedirs(f"{DIR}/backups/{type}", exist_ok=True)
 
     print("Installing mam...")
-    if first:
-        shutil.copy(__file__, "/usr/local/bin/mam")
-        os.chmod("/usr/local/bin/mam", 0o755)
-    else:
-        req = urllib.request.Request(CONFIG["address"])
-        try:
-            res = urllib.request.urlopen(req).read().decode()
-            with open("/usr/local/bin/mam", "w") as f:
-                f.write(res)
-        except:
-            print("Could not connect to server.")
-            sys.exit(1)
+    shutil.copy(__file__, "/usr/local/bin/mam")
+    os.chmod("/usr/local/bin/mam", 0o755)
 
     print("Installing daemon...")
     with open("/etc/systemd/system/mam.service", "w") as f:
@@ -566,11 +553,8 @@ def action_setup(first: bool):
         f.write("WantedBy=default.target\n")
 
     os.system("systemctl daemon-reload")
-    os.system("systemctl enable --now mam.service")
+    os.system("systemctl enable mam.service")
 
-
-def action_install():
-    action_setup(True)
     print("Done!")
     print("Please run `mam auth` to authenticate this machine.")
 
@@ -643,7 +627,17 @@ def action_update():
         print("Authentication failed.")
         sys.exit(1)
 
-    action_setup(False)
+    req = urllib.request.Request(CONFIG["address"])
+    try:
+        res = urllib.request.urlopen(req).read().decode()
+        with open("/tmp/mam", "w") as f:
+            f.write(res)
+    except:
+        print("Could not connect to server.")
+        sys.exit(1)
+
+    os.system("python3 /tmp/mam install")
+
     print("Updated!")
 
 
