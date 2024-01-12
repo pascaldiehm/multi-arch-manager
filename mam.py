@@ -556,7 +556,9 @@ def action_install():
     os.system("systemctl enable mam.service")
 
     print("Done!")
-    print("Please run `mam auth` to authenticate this machine.")
+
+    if not api("check"):
+        print("Please run `mam auth` to authenticate this machine.")
 
 
 def action_auth():
