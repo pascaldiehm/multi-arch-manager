@@ -520,6 +520,18 @@ def action_install():
         f.write("mam ALL=(root) NOPASSWD: /usr/bin/pacman\n")
 
     print("Installing dependencies...")
+    if os.system("pacman -Q base-devel") != 0:
+        os.system("pacman --noconfirm -Sy base-devel")
+
+    if os.system("pacman -Q binutils") != 0:
+        os.system("pacman --noconfirm -Sy binutils")
+
+    if os.system("pacman -Q fakeroot") != 0:
+        os.system("pacman --noconfirm -Sy fakeroot")
+
+    if os.system("pacman -Q git") != 0:
+        os.system("pacman --noconfirm -Sy git")
+
     if os.system("paru --version") != 0:
         if os.path.isdir("/tmp/paru"):
             shutil.rmtree("/tmp/paru")
