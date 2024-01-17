@@ -523,12 +523,6 @@ def action_install():
     if os.system("pacman -Q base-devel") != 0:
         os.system("pacman --noconfirm -Sy base-devel")
 
-    if os.system("pacman -Q binutils") != 0:
-        os.system("pacman --noconfirm -Sy binutils")
-
-    if os.system("pacman -Q fakeroot") != 0:
-        os.system("pacman --noconfirm -Sy fakeroot")
-
     if os.system("pacman -Q git") != 0:
         os.system("pacman --noconfirm -Sy git")
 
