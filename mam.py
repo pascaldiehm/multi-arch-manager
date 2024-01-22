@@ -1028,6 +1028,10 @@ def action_addPackage(name: str):
         print("Package is already synced")
         sys.exit(1)
 
+    if os.system(f"paru -Syi {b32d(obj)}") != 0:
+        print("Package does not exist")
+        sys.exit(1)
+
     package_backup(obj)
     api("package-add", {"id": obj})
     package_install(obj)
