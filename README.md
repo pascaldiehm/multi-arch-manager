@@ -4,7 +4,7 @@ Keep files synchronized between multiple Arch Linux machines.
 
 ## Usage
 
-1. Host [mam-server.php](mam-server.php) on a server accessible to all synced clients. The easiest way to do this is using the prebuilt docker image: `docker run -d -p 1234:80 -e MAM_PASSWORD=INSERT_PASSWORD_HERE -v PATH_TO_DATA_FOLDER:/data ghcr.io/pascaldiehm/mam` (replace `INSERT_PASSWORD_HERE` with your password, `1234` with your preferred port and `PATH_TO_DATA_FOLDER` with a persistent data folder or volume name).
+1. Host [mam-server.php](mam-server.php) on a server accessible to all synced clients. The easiest way to do this is using the prebuilt docker image: `docker run -d -p 1234:80 -e MAM_PASSWORD=INSERT_PASSWORD_HERE -v PATH_TO_DATA_FOLDER:/data ghcr.io/pascaldiehm/multi-arch-manager` (replace `INSERT_PASSWORD_HERE` with your password, `1234` with your preferred port and `PATH_TO_DATA_FOLDER` with a persistent data folder or volume name).
 2. Run `curl SERVER_URL > /tmp/mam.py && sudo python3 /tmp/mam.py install` (replace `SERVER_URL` with the URL of your mam server) to install mam on a machine.
 3. Run `sudo mam auth` and enter your server URL (including method) and password.
 4. See `sudo mam help` for a list of commands.
