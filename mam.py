@@ -81,8 +81,8 @@ def api(action: str, data: dict = {}):
     data["password"] = CONFIG["password"]
     data = json.dumps(data).encode()
 
-    req = urllib.request.Request(CONFIG["address"], data=data, headers={"Content-Type": "application/json"})
     try:
+        req = urllib.request.Request(CONFIG["address"], data=data, headers={"Content-Type": "application/json"})
         res = json.loads(urllib.request.urlopen(req).read().decode())
         if res["good"]:
             return res["data"]
