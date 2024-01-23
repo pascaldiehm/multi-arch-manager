@@ -532,7 +532,7 @@ def action_install():
 
         os.system("git clone https://aur.archlinux.org/paru.git /tmp/paru && chown -R mam:mam /tmp/paru")
         os.system("mkdir -p /tmp/mam && chown mam:mam /tmp/mam")
-        os.system("cd /tmp/paru && sudo -u mam HOME=/tmp/mam makepkg -sir")
+        os.system("cd /tmp/paru && sudo -u mam HOME=/tmp/mam makepkg --noconfirm -sir")
 
     print("Creating directories...")
     for type in ["files", "directories", "packages", "partials", "additionals"]:
