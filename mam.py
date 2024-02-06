@@ -227,6 +227,8 @@ def directory_download(obj: str, version: int):
     meta = api("directory-get-meta", {"id": obj})
 
     shutil.rmtree(directory)
+    os.mkdir(directory)
+
     content = api("directory-get-content", {"id": obj})
     for dir in sorted(content["dirs"], key=lambda dir: dir.count("/")):
         path = os.path.join(directory, b32d(dir))
@@ -638,13 +640,13 @@ def action_update():
     req = urllib.request.Request(CONFIG["address"])
     try:
         res = urllib.request.urlopen(req).read().decode()
-        with open("/tmp/mam", "w") as f:
+        with open("/tmp/mam.py", "w") as f:
             f.write(res)
     except:
         print("Could not connect to server.")
         sys.exit(1)
 
-    os.system("python3 /tmp/mam install")
+    os.system("python3 /tmp/mam.py install")
 
     print("Updated!")
 
