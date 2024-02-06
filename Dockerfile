@@ -1,5 +1,6 @@
 FROM php:apache
 
+COPY ./php.ini /usr/local/etc/php/
 COPY ./mam-server.php /var/www/html/index.php
 COPY ./mam.py /var/www/html/mam.py
 
