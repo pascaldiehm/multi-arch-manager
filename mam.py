@@ -9,9 +9,12 @@ import sys
 import urllib.request
 from datetime import datetime
 from getpass import getpass
+from typing import Any, TypeVar
+
+T = TypeVar("T")
 
 DIR = "/var/lib/mam"
-CONFIG = {"address": "localhost", "password": ""}
+CONFIG = {"address": "http://localhost", "password": ""}
 
 
 def b32e(s: str) -> str:
@@ -30,6 +33,36 @@ def b64d(s: str) -> bytes:
     return base64.b64decode(s.encode())
 
 
+def date(timestamp: int = int(datetime.now().timestamp())) -> str:
+    return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def json_read(path: str, default: T) -> T:
+    if not os.path.isfile(path):
+        return default
+
+    with open(path, "r") as f:
+        return json.load(f)
+
+
+def json_write(path: str, data: object):
+    with open(path, "w") as f:
+        json.dump(data, f)
+
+
+def lines_read(path: str) -> list[str]:
+    if not os.path.isfile(path):
+        return []
+
+    with open(path, "r") as f:
+        return f.read().splitlines()
+
+
+def lines_write(path: str, lines: list[str]):
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
 def makedirs(path: str) -> list[str]:
     dirs = []
     while not os.path.isdir(path):
@@ -42,48 +75,49 @@ def makedirs(path: str) -> list[str]:
     return dirs
 
 
-def date(timestamp: int = datetime.now().timestamp()) -> str:
-    return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+def handleCreatedDirs(dirs: list[str], owner: int, group: int):
+    created_dirs = json_read(f"{DIR}/objects/created_dirs", [])
+    for dir in dirs:
+        os.chown(dir, owner, group)
+        if not dir in created_dirs:
+            created_dirs.append(dir)
 
-
-def json_read(path: str, default: any = None):
-    if not os.path.isfile(path):
-        return default
-
-    with open(path) as f:
-        return json.load(f)
-
-
-def json_write(path: str, data: dict):
-    with open(path, "w") as f:
-        json.dump(data, f)
-
-
-def lines_read(path: str) -> list[str]:
-    if not os.path.isfile(path):
-        return []
-
-    with open(path) as f:
-        return f.read().splitlines()
-
-
-def lines_write(path: str, lines: list[str]):
-    with open(path, "w") as f:
-        f.write("\n".join(lines) + "\n")
+    json_write(f"{DIR}/objects/created_dirs", created_dirs)
 
 
 def arg(n: int) -> str | None:
     return sys.argv[n] if len(sys.argv) > n else None
 
 
-def api(action: str, data: dict = {}):
+def requireAuth():
+    if not os.path.isfile(f"{DIR}/config"):
+        print("Not configured.")
+    elif not api("check"):
+        print("Authentication failed.")
+    else:
+        return
+
+    sys.exit(1)
+
+
+def requireArgs(n: int | list[int], message: str):
+    if not isinstance(n, list):
+        n = [n]
+
+    if not len(sys.argv) in n:
+        print(message)
+        sys.exit(1)
+
+
+def api(action: str, data: dict = {}) -> Any:
     data["action"] = action
     data["password"] = CONFIG["password"]
-    data = json.dumps(data).encode()
 
     try:
-        req = urllib.request.Request(CONFIG["address"], data=data, headers={"Content-Type": "application/json"})
+        headers = {"Content-Type": "application/json", "User-Agent": "MultiArchManager"}
+        req = urllib.request.Request(CONFIG["address"], data=json.dumps(data).encode(), headers=headers)
         res = json.loads(urllib.request.urlopen(req).read().decode())
+
         if res["good"]:
             return res["data"]
     except:
@@ -139,16 +173,8 @@ def file_download(obj: str, version: int):
 
     os.chown(file, meta["owner"], meta["group"])
     os.chmod(file, meta["mode"])
-
     json_write(f"{DIR}/objects/files/{obj}", {"local": file_version(obj), "remote": version})
-
-    created_dirs = json_read(f"{DIR}/objects/created_dirs", [])
-    for dir in dirs:
-        os.chown(dir, meta["owner"], meta["group"])
-        if not dir in created_dirs:
-            created_dirs.append(dir)
-
-    json_write(f"{DIR}/objects/created_dirs", created_dirs)
+    handleCreatedDirs(dirs, meta["owner"], meta["group"])
 
 
 def file_upload(obj: str):
@@ -223,11 +249,15 @@ def directory_restore(obj: str):
 
 def directory_download(obj: str, version: int):
     directory = b32d(obj)
-    dirs = makedirs(directory)
+    dirs = makedirs(os.path.dirname(directory))
     meta = api("directory-get-meta", {"id": obj})
 
-    shutil.rmtree(directory)
+    if os.path.isdir(directory):
+        shutil.rmtree(directory)
+
     os.mkdir(directory)
+    os.chown(directory, meta["owner"], meta["group"])
+    os.chmod(directory, meta["mode"])
 
     content = api("directory-get-content", {"id": obj})
     for dir in sorted(content["dirs"], key=lambda dir: dir.count("/")):
@@ -248,14 +278,7 @@ def directory_download(obj: str, version: int):
         os.chmod(path, meta["mode"])
 
     json_write(f"{DIR}/objects/directories/{obj}", {"local": directory_version(obj), "remote": version})
-
-    created_dirs = json_read(f"{DIR}/objects/created_dirs", [])
-    for dir in dirs:
-        os.chown(dir, meta["owner"], meta["group"])
-        if not dir in created_dirs:
-            created_dirs.append(dir)
-
-    json_write(f"{DIR}/objects/created_dirs", created_dirs)
+    handleCreatedDirs(dirs, meta["owner"], meta["group"])
 
 
 def directory_upload(obj: str):
@@ -267,11 +290,7 @@ def directory_upload(obj: str):
         for dir in dirs:
             path = os.path.join(root, dir)
             stat = os.stat(path)
-            content["dirs"][b32e(os.path.relpath(path, directory))] = {
-                "owner": stat.st_uid,
-                "group": stat.st_gid,
-                "mode": stat.st_mode,
-            }
+            content["dirs"][b32e(os.path.relpath(path, directory))] = {"owner": stat.st_uid, "group": stat.st_gid, "mode": stat.st_mode}
 
         for file in files:
             path = os.path.join(root, file)
@@ -374,16 +393,8 @@ def partial_download(obj: str, version: int):
     lines_write(partial, lines)
     os.chown(partial, meta["owner"], meta["group"])
     os.chmod(partial, meta["mode"])
-
     json_write(f"{DIR}/objects/partials/{obj}", {"local": partial_version(obj), "remote": version})
-
-    created_dirs = json_read(f"{DIR}/objects/created_dirs", [])
-    for dir in dirs:
-        os.chown(dir, meta["owner"], meta["group"])
-        if not dir in created_dirs:
-            created_dirs.append(dir)
-
-    json_write(f"{DIR}/objects/created_dirs", created_dirs)
+    handleCreatedDirs(dirs, meta["owner"], meta["group"])
 
 
 def partial_upload(obj: str):
@@ -482,16 +493,8 @@ def additional_download(obj: str, version: int):
     lines_write(additional, lines)
     os.chown(additional, meta["owner"], meta["group"])
     os.chmod(additional, meta["mode"])
-
     json_write(f"{DIR}/objects/additionals/{obj}", {"local": additional_version(obj), "remote": version})
-
-    created_dirs = json_read(f"{DIR}/objects/created_dirs", [])
-    for dir in dirs:
-        os.chown(dir, meta["owner"], meta["group"])
-        if not dir in created_dirs:
-            created_dirs.append(dir)
-
-    json_write(f"{DIR}/objects/created_dirs", created_dirs)
+    handleCreatedDirs(dirs, meta["owner"], meta["group"])
 
 
 def additional_upload(obj: str):
@@ -566,7 +569,7 @@ def action_install():
     print("Done!")
 
     if not api("check"):
-        print("Please run `mam auth` to authenticate this machine.")
+        print("Please run `mam auth` to authenticate with a MAM server.")
 
 
 def action_auth():
@@ -574,20 +577,22 @@ def action_auth():
         CONFIG["address"] = input("Server address: ")
         CONFIG["password"] = getpass("Server password: ")
 
-        if not api("check"):
-            print("Authentication failed!")
-            print("Please try again.")
-            print()
-            continue
+        if api("check"):
+            print("Authentication successful!")
+            json_write(f"{DIR}/config", CONFIG)
+            os.chmod(f"{DIR}/config", 0o600)
+            break
 
-        break
-
-    print("Authentication successful!")
-    json_write(f"{DIR}/config", CONFIG)
-    os.chmod(f"{DIR}/config", 0o600)
+        print("Authentication failed!")
+        print("Please try again.")
+        print()
 
 
 def action_uninstall():
+    print("Stopping daemon...")
+    os.system("systemctl stop mam.service")
+    os.remove("/etc/systemd/system/mam.service")
+
     print("Restoring local files...")
     for obj in os.listdir(f"{DIR}/objects/files"):
         file_restore(obj)
@@ -617,11 +622,7 @@ def action_uninstall():
         except:
             pass
 
-    print("Stopping daemon...")
-    os.system("systemctl disable --now mam.service")
-    os.remove("/etc/systemd/system/mam.service")
-
-    print("Uninstalling mam...")
+    print("Uninstalling mam binary...")
     os.remove("/usr/local/bin/mam")
     shutil.rmtree(DIR)
 
@@ -633,9 +634,7 @@ def action_uninstall():
 
 
 def action_update():
-    if not api("check"):
-        print("Authentication failed.")
-        sys.exit(1)
+    requireAuth()
 
     req = urllib.request.Request(CONFIG["address"])
     try:
@@ -643,32 +642,26 @@ def action_update():
         with open("/tmp/mam.py", "w") as f:
             f.write(res)
     except:
-        print("Could not connect to server.")
+        print("Could not download mam binary.")
         sys.exit(1)
 
     os.system("python3 /tmp/mam.py install")
-
     print("Updated!")
 
 
 def action_status():
-    if not os.path.isfile(f"{DIR}/config"):
-        print("Not configured.")
-        sys.exit(1)
-    elif not api("check"):
-        print("Authentication failed.")
-        sys.exit(1)
-    elif not os.path.isfile(f"{DIR}/state"):
+    requireAuth()
+
+    if not os.path.isfile(f"{DIR}/state"):
         print("Not synced.")
-    else:
-        with open(f"{DIR}/state") as f:
-            print(f.read())
+        return
+
+    with open(f"{DIR}/state", "r") as f:
+        print(f.read())
 
 
 def action_list():
-    if not api("check"):
-        print("Authentication failed.")
-        sys.exit(1)
+    requireAuth()
 
     print("Synchronized files:")
     local_objects = sorted(os.listdir(f"{DIR}/objects/files"), key=lambda obj: b32d(obj))
@@ -687,20 +680,18 @@ def action_list():
             print(f"  {file} ({date(remote_version)}, remote changed)")
         elif local_version > local_sync_version:
             print(f"  {file} ({date(local_version)}, local changed)")
-        elif local_version < local_sync_version:
-            print(f"  {file} ({date(local_version)}, local deleted)")
+        elif local_version == 0:
+            print(f"  {file} ({date(remote_version)}, local deleted)")
         else:
             print(f"  {file} ({date(remote_version)})")
 
     for obj in remote_objects:
         if not obj in local_objects:
-            file = b32d(obj)
-            print(f"  {file} ({date(remote_objects[obj])}, remote only)")
+            print(f"  {b32d(obj)} ({date(remote_objects[obj])}, remote only)")
 
     for obj in local_objects:
         if not obj in remote_objects:
-            file = b32d(obj)
-            print(f"  {file} ({date(file_version(obj))}, local only)")
+            print(f"  {b32d(obj)} ({date(file_version(obj))}, local only)")
 
     print("\nSynchronized directories:")
     local_objects = sorted(os.listdir(f"{DIR}/objects/directories"), key=lambda obj: b32d(obj))
@@ -719,20 +710,18 @@ def action_list():
             print(f"  {directory} ({date(remote_version)}, remote changed)")
         elif local_version > local_sync_version:
             print(f"  {directory} ({date(local_version)}, local changed)")
-        elif local_version < local_sync_version:
-            print(f"  {directory} ({date(local_version)}, local deleted)")
+        elif local_version == 0:
+            print(f"  {directory} ({date(remote_version)}, local deleted)")
         else:
             print(f"  {directory} ({date(remote_version)})")
 
     for obj in remote_objects:
         if not obj in local_objects:
-            directory = b32d(obj)
-            print(f"  {directory} ({date(remote_objects[obj])}, remote only)")
+            print(f"  {b32d(obj)} ({date(remote_objects[obj])}, remote only)")
 
     for obj in local_objects:
         if not obj in remote_objects:
-            directory = b32d(obj)
-            print(f"  {directory} ({date(directory_version(obj))}, local only)")
+            print(f"  {b32d(obj)} ({date(directory_version(obj))}, local only)")
 
     print("\nSynchronized packages:")
     local_objects = sorted(os.listdir(f"{DIR}/objects/packages"), key=lambda obj: b32d(obj))
@@ -767,8 +756,8 @@ def action_list():
             print(f"  {partial} ({date(remote_version)}, remote changed)")
         elif local_version > local_sync_version:
             print(f"  {partial} ({date(local_version)}, local changed)")
-        elif local_version < local_sync_version:
-            print(f"  {partial} ({date(local_version)}, local deleted)")
+        elif local_version == 0:
+            print(f"  {partial} ({date(remote_version)}, local deleted)")
         else:
             print(f"  {partial} ({date(remote_version)})")
 
@@ -776,14 +765,13 @@ def action_list():
 
     for obj in remote_objects:
         if not obj in local_objects:
-            partial = b32d(obj)
-            print(f"  {partial} ({date(remote_objects[obj])}, remote only)")
+            print(f"  {b32d(obj)} ({date(remote_objects[obj])}, remote only)")
             partial_printDetails(obj)
 
     for obj in local_objects:
         if not obj in remote_objects:
-            partial = b32d(obj)
-            print(f"  {partial} ({date(partial_version(obj))}, local only)")
+            print(f"  {b32d(obj)} ({date(partial_version(obj))}, local only)")
+            partial_printDetails(obj)
 
     print("\nSynchronized additionals:")
     local_objects = sorted(os.listdir(f"{DIR}/objects/additionals"), key=lambda obj: b32d(obj))
@@ -802,28 +790,22 @@ def action_list():
             print(f"  {additional} ({date(remote_version)}, remote changed)")
         elif local_version > local_sync_version:
             print(f"  {additional} ({date(local_version)}, local changed)")
-        elif local_version < local_sync_version:
-            print(f"  {additional} ({date(local_version)}, local deleted)")
+        elif local_version == 0:
+            print(f"  {additional} ({date(remote_version)}, local deleted)")
         else:
             print(f"  {additional} ({date(remote_version)})")
 
     for obj in remote_objects:
         if not obj in local_objects:
-            additional = b32d(obj)
-            print(f"  {additional} ({date(remote_objects[obj])}, remote only)")
+            print(f"  {b32d(obj)} ({date(remote_objects[obj])}, remote only)")
 
     for obj in local_objects:
         if not obj in remote_objects:
-            additional = b32d(obj)
-            print(f"  {additional} ({date(additional_version(obj))}, local only)")
+            print(f"  {b32d(obj)} ({date(additional_version(obj))}, local only)")
 
 
 def action_sync():
-    if not api("check"):
-        with open(f"{DIR}/state") as f:
-            f.write("Authentication failed.")
-
-        sys.exit(1)
+    requireAuth()
 
     with open(f"{DIR}/state", "w") as f:
         f.write("Syncing...")
@@ -867,7 +849,7 @@ def action_sync():
             remote_version = remote_files[file]
             local_sync_version, remote_sync_version = file_syncVersion(file)
 
-            if remote_version > remote_sync_version or local_version < local_sync_version:
+            if remote_version > remote_sync_version or local_version == 0:
                 file_download(file, remote_version)
             elif local_version > local_sync_version:
                 file_upload(file)
@@ -881,7 +863,7 @@ def action_sync():
             remote_version = remote_directories[directory]
             local_sync_version, remote_sync_version = directory_syncVersion(directory)
 
-            if remote_version > remote_sync_version or local_version < local_sync_version:
+            if remote_version > remote_sync_version or local_version == 0:
                 directory_download(directory, remote_version)
             elif local_version > local_sync_version:
                 directory_upload(directory)
@@ -901,7 +883,7 @@ def action_sync():
             remote_version = remote_partials[partial]
             local_sync_version, remote_sync_version = partial_syncVersion(partial)
 
-            if remote_version > remote_sync_version or local_version < local_sync_version:
+            if remote_version > remote_sync_version or local_version == 0:
                 partial_download(partial, remote_version)
             elif local_version > local_sync_version:
                 partial_upload(partial)
@@ -915,7 +897,7 @@ def action_sync():
             remote_version = remote_additionals[additional]
             local_sync_version, remote_sync_version = additional_syncVersion(additional)
 
-            if remote_version > remote_sync_version or local_version < local_sync_version:
+            if remote_version > remote_sync_version or local_version == 0:
                 additional_download(additional, remote_version)
             elif local_version > local_sync_version:
                 additional_upload(additional)
@@ -927,152 +909,152 @@ def action_sync():
 def action_addFile(path: str):
     file = os.path.abspath(path)
     if not os.path.isfile(file):
-        print("File does not exist")
+        print("File does not exist.")
         sys.exit(1)
 
     obj = b32e(file)
     if api("file-exists", {"id": obj}):
-        print("File is already synced")
+        print("File is already synced.")
         sys.exit(1)
 
     if api("partial-exists", {"id": obj}):
-        print("File is already synced as a partial")
+        print("File is already synced as a partial.")
         sys.exit(1)
 
     if api("additional-exists", {"id": obj}):
-        print("File is already synced as an additional")
+        print("File is already synced as an additional.")
         sys.exit(1)
 
-    directories = api("directory-list")
-    parents = [b32d(dir) for dir in directories if file.startswith(b32d(dir))]
-    if len(parents) > 0:
-        print(f"File is part of synced directory {parents[0]}")
-        sys.exit(1)
+    dirs = api("directory-list")
+    for dir in dirs:
+        if file.startswith(b32d(dir)):
+            print(f"File is part of synced directory {b32d(dir)}.")
+            sys.exit(1)
 
     file_backup(obj)
     api("file-create", {"id": obj})
     file_upload(obj)
-
-    print("File added")
+    print("File added!")
 
 
 def action_removeFile(path: str):
     file = os.path.abspath(path)
     obj = b32e(file)
     if not api("file-exists", {"id": obj}):
-        print("File is not synced")
+        print("File is not synced.")
         sys.exit(1)
 
     api("file-delete", {"id": obj})
     file_restore(obj)
-
-    print("File removed")
+    print("File removed!")
 
 
 def action_addDirectory(path: str):
     directory = os.path.abspath(path)
     if not os.path.isdir(directory):
-        print("Directory does not exist")
+        print("Directory does not exist.")
         sys.exit(1)
 
     obj = b32e(directory)
     if api("directory-exists", {"id": obj}):
-        print("Directory is already synced")
+        print("Directory is already synced.")
         sys.exit(1)
 
-    directories = api("directory-list")
-    parents = [b32d(dir) for dir in directories if directory.startswith(b32d(dir))]
-    if len(parents) > 0:
-        print(f"Directory is part of synced directory {parents[0]}")
-        sys.exit(1)
+    dirs = api("directory-list")
+    for dir in dirs:
+        if directory.startswith(b32d(dir)):
+            print(f"Directory is part of synced directory {b32d(dir)}.")
+            sys.exit(1)
 
     files = api("file-list")
-    children = [b32d(file) for file in files if b32d(file).startswith(directory)]
-    if len(children) > 0:
-        print(f"Directory contains synced file {children[0]}")
-        sys.exit(1)
+    for file in files:
+        if b32d(file).startswith(directory):
+            print(f"Directory contains synced file {b32d(file)}.")
+            sys.exit(1)
+
+    dirs = api("directory-list")
+    for dir in dirs:
+        if b32d(dir).startswith(directory):
+            print(f"Directory contains synced directory {b32d(dir)}.")
+            sys.exit(1)
 
     partials = api("partial-list")
-    children = [b32d(partial) for partial in partials if b32d(partial).startswith(directory)]
-    if len(children) > 0:
-        print(f"Directory contains synced partial {children[0]}")
-        sys.exit(1)
+    for partial in partials:
+        if b32d(partial).startswith(directory):
+            print(f"Directory contains synced partial {b32d(partial)}.")
+            sys.exit(1)
 
     additionals = api("additional-list")
-    children = [b32d(additional) for additional in additionals if b32d(additional).startswith(directory)]
-    if len(children) > 0:
-        print(f"Directory contains synced additional {children[0]}")
-        sys.exit(1)
+    for additional in additionals:
+        if b32d(additional).startswith(directory):
+            print(f"Directory contains synced additional {b32d(additional)}.")
+            sys.exit(1)
 
     directory_backup(obj)
     api("directory-create", {"id": obj})
     directory_upload(obj)
-
-    print("Directory added")
+    print("Directory added!")
 
 
 def action_removeDirectory(path: str):
     directory = os.path.abspath(path)
     obj = b32e(directory)
     if not api("directory-exists", {"id": obj}):
-        print("Directory is not synced")
+        print("Directory is not synced.")
         sys.exit(1)
 
     api("directory-delete", {"id": obj})
     directory_restore(obj)
-
-    print("Directory removed")
+    print("Directory removed!")
 
 
 def action_addPackage(name: str):
-    obj = b32e(name)
-    if api("package-exists", {"id": obj}):
-        print("Package is already synced")
+    if os.system(f"paru -Syi {name}") != 0:
+        print("Package does not exist.")
         sys.exit(1)
 
-    if os.system(f"paru -Syi {b32d(obj)}") != 0:
-        print("Package does not exist")
+    obj = b32e(name)
+    if api("package-exists", {"id": obj}):
+        print("Package is already synced.")
         sys.exit(1)
 
     package_backup(obj)
     api("package-add", {"id": obj})
     package_install(obj)
-
-    print("Package added")
+    print("Package added!")
 
 
 def action_removePackage(name: str):
     obj = b32e(name)
     if not api("package-exists", {"id": obj}):
-        print("Package is not synced")
+        print("Package is not synced.")
         sys.exit(1)
 
     api("package-remove", {"id": obj})
     package_restore(obj)
-
-    print("Package removed")
+    print("Package removed!")
 
 
 def action_addPartial(path: str, pattern: str, section: str | None):
     partial = os.path.abspath(path)
     if not os.path.isfile(partial):
-        print("Partial does not exist")
+        print("Partial does not exist.")
         sys.exit(1)
 
     obj = b32e(partial)
     if api("file-exists", {"id": obj}):
-        print("Partial is already synced as a file")
+        print("Partial is already synced as a file.")
         sys.exit(1)
 
     if api("additional-exists", {"id": obj}):
-        print("Partial is already synced as an additional")
+        print("Partial is already synced as an additional.")
         sys.exit(1)
 
-    directories = api("directory-list")
-    parents = [b32d(dir) for dir in directories if partial.startswith(b32d(dir))]
-    if len(parents) > 0:
-        print(f"Partial is part of synced directory {parents[0]}")
-        sys.exit(1)
+    dirs = api("directory-list")
+    for dir in dirs:
+        if partial.startswith(b32d(dir)):
+            print(f"Partial is part of synced directory {b32d(dir)}.")
+            sys.exit(1)
 
     if not api("partial-exists", {"id": obj}):
         partial_backup(obj)
@@ -1082,53 +1064,60 @@ def action_addPartial(path: str, pattern: str, section: str | None):
     content.append({"pattern": pattern, "value": "", "section": section})
     api("partial-set-content", {"id": obj, "content": content, "version": int(datetime.now().timestamp())})
     partial_upload(obj)
+    print("Partial added!")
 
-    print("Partial added")
 
-
-def action_removePartial(path: str, pattern: str | None, section: str | None):
+def action_removePartial(path: str, pattern: str, section: str | None):
     partial = os.path.abspath(path)
     obj = b32e(partial)
     if not api("partial-exists", {"id": obj}):
-        print("Partial is not synced")
+        print("Partial is not synced.")
         sys.exit(1)
 
-    if pattern == None:
-        api("partial-delete", {"id": obj})
-        partial_restore(obj)
-    else:
-        content = api("partial-get-content", {"id": obj})
-        content = [cnt for cnt in content if cnt["pattern"] != pattern or cnt["section"] != section]
-        api("partial-set-content", {"id": obj, "content": content, "version": int(datetime.now().timestamp())})
-        partial_download(obj, int(datetime.now().timestamp()))
+    content = api("partial-get-content", {"id": obj})
+    content = [cnt for cnt in content if cnt["pattern"] != pattern or cnt["section"] != section]
+    version = int(datetime.now().timestamp())
+    api("partial-set-content", {"id": obj, "content": content, "version": version})
+    partial_download(obj, version)
+    print("Partial removed!")
 
-    print("Partial removed")
+
+def action_purgePartial(path: str):
+    partial = os.path.abspath(path)
+    obj = b32e(partial)
+    if not api("partial-exists", {"id": obj}):
+        print("Partial is not synced.")
+        sys.exit(1)
+
+    api("partial-delete", {"id": obj})
+    partial_restore(obj)
+    print("Partial removed!")
 
 
 def action_addAdditional(path: str, prefix: str):
     additional = os.path.abspath(path)
     if not os.path.isfile(additional):
-        print("Additional does not exist")
+        print("Additional does not exist.")
         sys.exit(1)
 
     obj = b32e(additional)
     if api("additional-exists", {"id": obj}):
-        print("Additional is already synced")
+        print("Additional is already synced.")
         sys.exit(1)
 
     if api("file-exists", {"id": obj}):
-        print("Additional is already synced as a file")
+        print("Additional is already synced as a file.")
         sys.exit(1)
 
     if api("partial-exists", {"id": obj}):
-        print("Additional is already synced as a partial")
+        print("Additional is already synced as a partial.")
         sys.exit(1)
 
-    directories = api("directory-list")
-    parents = [b32d(dir) for dir in directories if additional.startswith(b32d(dir))]
-    if len(parents) > 0:
-        print(f"Additional is part of synced directory {parents[0]}")
-        sys.exit(1)
+    dirs = api("directory-list")
+    for dir in dirs:
+        if additional.startswith(b32d(dir)):
+            print(f"Additional is part of synced directory {b32d(dir)}.")
+            sys.exit(1)
 
     additional_backup(obj)
 
@@ -1140,26 +1129,24 @@ def action_addAdditional(path: str, prefix: str):
 
     api("additional-create", {"id": obj, "prefix": prefix})
     additional_upload(obj)
-
-    print("Additional added")
+    print("Additional added!")
 
 
 def action_removeAdditional(path: str):
     additional = os.path.abspath(path)
     obj = b32e(additional)
     if not api("additional-exists", {"id": obj}):
-        print("Additional is not synced")
+        print("Additional is not synced.")
         sys.exit(1)
 
     api("additional-delete", {"id": obj})
     additional_restore(obj)
-
-    print("Additional removed")
+    print("Additional removed!")
 
 
 if __name__ == "__main__":
     if os.geteuid() != 0:
-        print("This script must be run as root")
+        print("This script must be run as root.")
         sys.exit(1)
 
     os.makedirs(DIR, exist_ok=True)
@@ -1167,148 +1154,100 @@ if __name__ == "__main__":
 
     match arg(1):
         case "install":
-            if len(sys.argv) != 2:
-                print("Usage: mam install")
-                sys.exit(1)
-
+            requireArgs(2, "Usage: mam install")
             action_install()
 
         case "auth":
-            if len(sys.argv) != 2:
-                print("Usage: mam auth")
-                sys.exit(1)
-
+            requireArgs(2, "Usage: mam auth")
             action_auth()
 
         case "uninstall":
-            if len(sys.argv) != 2:
-                print("Usage: mam uninstall")
-                sys.exit(1)
-
+            requireArgs(2, "Usage: mam uninstall")
             action_uninstall()
 
         case "update":
-            if len(sys.argv) != 2:
-                print("Usage: mam update")
-                sys.exit(1)
-
+            requireArgs(2, "Usage: mam update")
             action_update()
 
         case "status":
-            if len(sys.argv) != 2:
-                print("Usage: mam status")
-                sys.exit(1)
-
+            requireArgs(2, "Usage: mam status")
             action_status()
 
         case "list":
-            if len(sys.argv) != 2:
-                print("Usage: mam list")
-                sys.exit(1)
-
+            requireArgs(2, "Usage: mam list")
             action_list()
 
         case "sync":
-            if len(sys.argv) != 2:
-                print("Usage: mam sync")
-                sys.exit(1)
-
+            requireArgs(2, "Usage: mam sync")
             action_sync()
 
         case "add":
             match arg(2):
                 case "file":
-                    if len(sys.argv) != 4:
-                        print("Usage: mam add file <path>")
-                        sys.exit(1)
-
-                    action_addFile(arg(3))
+                    requireArgs(4, "Usage: mam add file <path>")
+                    action_addFile(str(arg(3)))
 
                 case "directory":
-                    if len(sys.argv) != 4:
-                        print("Usage: mam add directory <path>")
-                        sys.exit(1)
-
-                    action_addDirectory(arg(3))
+                    requireArgs(4, "Usage: mam add directory <path>")
+                    action_addDirectory(str(arg(3)))
 
                 case "package":
-                    if len(sys.argv) != 4:
-                        print("Usage: mam add package <name>")
-                        sys.exit(1)
-
-                    action_addPackage(arg(3))
+                    requireArgs(4, "Usage: mam add package <name>")
+                    action_addPackage(str(arg(3)))
 
                 case "partial":
-                    if len(sys.argv) < 5 or len(sys.argv) > 6:
-                        print("Usage: mam add partial <path> <pattern> [section]")
-                        sys.exit(1)
-
-                    action_addPartial(arg(3), arg(4), arg(5))
+                    requireArgs([5, 6], "Usage: mam add partial <path> <pattern> [<section>]")
+                    action_addPartial(str(arg(3)), str(arg(4)), arg(5))
 
                 case "additional":
-                    if len(sys.argv) < 5:
-                        print("Usage: mam add additional <path> <prefix>")
-                        sys.exit(1)
-
-                    action_addAdditional(arg(3), arg(4))
+                    requireArgs(5, "Usage: mam add additional <path> <prefix>")
+                    action_addAdditional(str(arg(3)), str(arg(4)))
 
                 case _:
                     print("Usage: mam add <object>")
                     print("Add an object to sync")
                     print()
-                    print("mam add file <path>                         Add a file to sync")
-                    print("mam add directory <path>                    Add a directory to sync")
-                    print("mam add package <name>                      Add a package to sync")
-                    print("mam add partial <path> <pattern> [section]  Add a partial to sync")
-                    print("mam add additional <path> <prefix>          Add an additional to sync")
+                    print("mam add file <path>                           Add a file to sync")
+                    print("mam add directory <path>                      Add a directory to sync")
+                    print("mam add package <name>                        Add a package to sync")
+                    print("mam add partial <path> <pattern> [<section>]  Add a partial to sync")
+                    print("mam add additional <path> <prefix>            Add an additional to sync")
                     sys.exit(1)
 
         case "remove":
             match arg(2):
                 case "file":
-                    if len(sys.argv) != 4:
-                        print("Usage: mam remove file <path>")
-                        sys.exit(1)
-
-                    action_removeFile(arg(3))
+                    requireArgs(4, "Usage: mam remove file <path>")
+                    action_removeFile(str(arg(3)))
 
                 case "directory":
-                    if len(sys.argv) != 4:
-                        print("Usage: mam remove directory <path>")
-                        sys.exit(1)
-
-                    action_removeDirectory(arg(3))
+                    requireArgs(4, "Usage: mam remove directory <path>")
+                    action_removeDirectory(str(arg(3)))
 
                 case "package":
-                    if len(sys.argv) != 4:
-                        print("Usage: mam remove package <name>")
-                        sys.exit(1)
-
-                    action_removePackage(arg(3))
+                    requireArgs(4, "Usage: mam remove package <name>")
+                    action_removePackage(str(arg(3)))
 
                 case "partial":
-                    if len(sys.argv) < 4 or len(sys.argv) > 6:
-                        print("Usage: mam remove partial <path> [pattern [section]]")
-                        sys.exit(1)
-
-                    action_removePartial(arg(3), arg(4), arg(5))
+                    requireArgs([4, 5, 6], "Usage: mam remove partial <path> [<pattern> [<section>]]")
+                    if arg(4) == None:
+                        action_purgePartial(str(arg(3)))
+                    else:
+                        action_removePartial(str(arg(3)), str(arg(4)), arg(5))
 
                 case "additional":
-                    if len(sys.argv) < 4:
-                        print("Usage: mam remove additional <path>")
-                        sys.exit(1)
-
-                    action_removeAdditional(arg(3))
+                    requireArgs(4, "Usage: mam remove additional <path>")
+                    action_removeAdditional(str(arg(3)))
 
                 case _:
                     print("Usage: mam remove <object>")
                     print("Remove an object from sync")
                     print()
-                    print("mam remove file <path>                         Remove a file from sync")
-                    print("mam remove directory <path>                    Remove a directory from sync")
-                    print("mam remove package <name>                      Remove a package from sync")
-                    print("mam remove partial <path> [pattern [section]]  Remove a partial from sync")
-                    print("mam remove additional <path>                   Remove an additional from sync")
+                    print("mam remove file <path>                             Remove a file from sync")
+                    print("mam remove directory <path>                        Remove a directory from sync")
+                    print("mam remove package <name>                          Remove a package from sync")
+                    print("mam remove partial <path> [<pattern> [<section>]]  Remove a partial from sync")
+                    print("mam remove additional <path> <prefix>              Remove an additional from sync")
                     sys.exit(1)
 
         case _:
